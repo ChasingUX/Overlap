@@ -34,6 +34,23 @@ enum PanelTab: Int, CaseIterable, Identifiable {
     var isProjectTab: Bool { self == .media || self == .canvas }
 }
 
+/// A short note at the bottom of the window, as when an export finishes or fails.
+struct Toast: Identifiable, Equatable {
+    enum Kind {
+        case done
+        case failed
+    }
+
+    let id = UUID()
+    var kind: Kind
+    var title: String
+    var detail: String?
+    /// A file it can show in Finder.
+    var file: URL?
+
+    static let doneDuration = Duration.seconds(6)
+}
+
 struct AlertMessage: Identifiable {
     let id = UUID()
     var title: String
@@ -59,6 +76,8 @@ final class ProjectStore {
     private(set) var thumbnails: [UUID: CGImage] = [:]
     private(set) var filmstrips: [UUID: Filmstrip] = [:]
     private(set) var waveforms: [UUID: Waveform] = [:]
+    /// What recordings look like with Isolate voice on, worked out once one of their clips turns it on.
+    private(set) var isolatedWaveforms: [UUID: Waveform] = [:]
     var alert: AlertMessage?
     var assetPendingRemoval: Asset?
     /// The document's name and unsaved-changes state, shown in the title bar.
@@ -100,6 +119,7 @@ final class ProjectStore {
     @ObservationIgnored weak var undoManager: UndoManager?
     @ObservationIgnored private var avAssets: [UUID: AVURLAsset] = [:]
     @ObservationIgnored private var analyzing: Set<UUID> = []
+    @ObservationIgnored private var isolating: Set<UUID> = []
     @ObservationIgnored private var rebuildTask: Task<Void, Never>?
 
     static let pixelsPerSecondRange = 2.0...800.0
@@ -119,6 +139,7 @@ final class ProjectStore {
         avAssets = [:]
         selection = []
         project.assets.forEach(analyze)
+        analyzeIsolatedVoices()
         playback.setMasterVolume(project.masterVolume)
         rebuildPlayback()
     }
@@ -139,6 +160,7 @@ final class ProjectStore {
 
     /// Applies one undoable edit to the project.
     func apply(_ actionName: String, _ change: (inout Project) -> Void) {
+        guard !isExporting else { return }
         let before = project
         change(&project)
         project.normalizeTracks()
@@ -171,6 +193,7 @@ final class ProjectStore {
         }
         playback.setMasterVolume(project.masterVolume)
         rebuildPlayback()
+        analyzeIsolatedVoices()
     }
 
     func rebuildPlayback() {
@@ -541,6 +564,18 @@ final class ProjectStore {
         apply("Change Track Volume") { $0.setVolume(volume, onTracks: ids) }
     }
 
+    /// Turns voice isolation on or off for the selected clips with sound.
+    func setIsolatesVoice(_ isOn: Bool) {
+        let ids = editableSelection.filter { id in project.clip(id).map(project.playsSound) ?? false }
+        guard !ids.isEmpty else { return }
+        apply(isOn ? "Isolate Voice" : "Stop Isolating Voice") { project in
+            for id in ids {
+                guard let location = project.location(ofClip: id) else { continue }
+                project.tracks[location.track].clips[location.clip].isolatesVoice = isOn
+            }
+        }
+    }
+
     func setMasterVolume(_ volume: Double) {
         // Up to +12 dB, the top of the volume sliders.
         apply("Change Master Volume") { $0.masterVolume = min(max(volume, 0), 4) }
@@ -627,9 +662,117 @@ final class ProjectStore {
         avAssets[id] = nil
     }
 
+    // MARK: Export
+
+    /// Shows the Export sheet.
+    var isExportSheetShown = false
+    /// What the next export makes. The format chosen last is remembered between exports and projects; everything
+    /// else keeps the settings that suit most videos.
+    var exportSettings = ProjectStore.rememberedExportSettings() {
+        didSet { UserDefaults.standard.set(try? JSONEncoder().encode(exportSettings), forKey: Self.exportSettingsKey) }
+    }
+    /// Where exports are saved, remembered too.
+    var exportFolder = ProjectStore.rememberedExportFolder() {
+        didSet { UserDefaults.standard.set(exportFolder.path, forKey: Self.exportFolderKey) }
+    }
+    /// How far the export has got, while one runs. The project can't be edited until it's done or canceled.
+    private(set) var exportProgress: Exporter.Progress?
+    @ObservationIgnored private var exportTask: Task<Void, Never>?
+
+    var isExporting: Bool { exportProgress != nil }
+
+    private static let exportSettingsKey = "ExportSettings"
+    private static let exportFolderKey = "ExportFolder"
+
+    private static func rememberedExportSettings() -> ExportSettings {
+        var settings = ExportSettings()
+        if let data = UserDefaults.standard.data(forKey: exportSettingsKey),
+           let remembered = try? JSONDecoder().decode(ExportSettings.self, from: data) {
+            settings.videoFormat = remembered.videoFormat
+            settings.audioFormat = remembered.audioFormat
+            settings.isAudioOnly = remembered.isAudioOnly
+        }
+        return settings
+    }
+
+    private static func rememberedExportFolder() -> URL {
+        if let path = UserDefaults.standard.string(forKey: exportFolderKey), FileManager.default.fileExists(atPath: path) {
+            return URL(filePath: path, directoryHint: .isDirectory)
+        }
+        return FileManager.default.urls(for: .moviesDirectory, in: .userDomainMask).first ?? FileManager.default.homeDirectoryForCurrentUser
+    }
+
+    /// What the next export makes. Without a picture on the timeline, that's sound only.
+    var exportFormat: ExportSettings.Format {
+        project.hasVisualClips ? exportSettings.format : exportSettings.audioFormat
+    }
+
     func requestExport() {
-        alert = AlertMessage(title: "Export arrives in milestone 5",
-                             message: "MP4, MOV and audio-only export are planned for milestone 5.")
+        guard !isExporting else { return }
+        guard project.duration > .zero else {
+            showToast(Toast(kind: .failed, title: "Nothing to export", detail: "Add media to the timeline first."))
+            return
+        }
+        isExportSheetShown = true
+    }
+
+    func setNormalizesLoudness(_ isOn: Bool) {
+        apply(isOn ? "Normalize Loudness" : "Stop Normalizing Loudness") { $0.normalizesLoudness = isOn }
+    }
+
+    /// Exports the project as it is now to `destination`, replacing any file there, then shows it in Finder.
+    func export(to destination: URL) {
+        guard !isExporting else { return }
+        var settings = exportSettings
+        if !project.hasVisualClips { settings.isAudioOnly = true }
+        let project = project
+        exportProgress = Exporter.Progress(stage: project.normalizesLoudness ? .measuring : .writing, fraction: 0)
+        exportTask = Task {
+            do {
+                let job = try await Exporter.job(for: project, assets: { self.avAsset(for: $0) }, settings: settings, destination: destination)
+                try await Exporter.run(job) { progress in
+                    Task { @MainActor in
+                        // Only forward, so the bar never slips back if two reports arrive out of order.
+                        if self.isExporting, progress.fraction >= self.exportProgress?.fraction ?? 0 { self.exportProgress = progress }
+                    }
+                }
+                finishExport()
+                showToast(Toast(kind: .done, title: "Exported “\(destination.lastPathComponent)”", file: destination))
+            } catch {
+                let canceled = Task.isCancelled
+                finishExport()
+                if !canceled {
+                    showToast(Toast(kind: .failed, title: "The export couldn't be finished", detail: error.localizedDescription))
+                }
+            }
+        }
+    }
+
+    /// The note at the bottom of the window about how the last export went.
+    private(set) var toast: Toast?
+
+    /// Shows a toast. One that says it's done goes by itself after a few seconds; a failure stays until it's closed.
+    func showToast(_ toast: Toast) {
+        self.toast = toast
+        guard toast.kind == .done else { return }
+        Task {
+            try? await Task.sleep(for: Toast.doneDuration)
+            if self.toast?.id == toast.id { self.toast = nil }
+        }
+    }
+
+    func dismissToast() {
+        toast = nil
+    }
+
+    func cancelExport() {
+        exportTask?.cancel()
+    }
+
+    private func finishExport() {
+        exportTask = nil
+        exportProgress = nil
+        isExportSheetShown = false
     }
 
     // MARK: Selection
@@ -817,6 +960,22 @@ final class ProjectStore {
                 await MediaAnalysis.filmstrip(for: url) { strip in
                     self.filmstrips[asset.id] = strip
                 }
+            }
+        }
+    }
+
+    /// Works out the isolated waveform of each recording that has a clip with Isolate voice on, once.
+    func analyzeIsolatedVoices() {
+        let needed = Set(project.tracks.flatMap(\.clips).filter(\.isolatesVoice).map(\.assetID))
+        for id in needed where isolatedWaveforms[id] == nil && !isolating.contains(id) {
+            guard let asset = project.asset(id), asset.hasAudio else { continue }
+            isolating.insert(id)
+            let url = mediaURL(for: asset)
+            Task {
+                if let waveform = await MediaAnalysis.isolatedWaveform(for: url) {
+                    isolatedWaveforms[id] = waveform
+                }
+                isolating.remove(id)
             }
         }
     }

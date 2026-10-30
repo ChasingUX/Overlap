@@ -109,6 +109,75 @@ enum DebugSnapshot {
                 }
             }
 
+            // OVERLAP_SNAPSHOT_EXPORT=sheet opens the Export sheet. A format name (mp4, mov, wav, aiff, m4a) also
+            // exports through it, as pressing Export does, into the snapshot's folder, and reports the file; fail
+            // exports to a folder that isn't there. The sheet is captured as <prefix>-export.png, mid-export as
+            // -export-progress.png, and the window with its toast afterwards as -export-done.png.
+            var exportReport: [String: Any] = [:]
+            if let mode = environment["OVERLAP_SNAPSHOT_EXPORT"], let store = document?.store {
+                let capture = { (suffix: String) in
+                    guard let sheet = NSApplication.shared.windows.lazy.compactMap(\.attachedSheet).first,
+                          let view = sheet.contentView?.superview ?? sheet.contentView,
+                          let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
+                    view.cacheDisplay(in: view.bounds, to: bitmap)
+                    try? bitmap.representation(using: .png, properties: [:])?.write(to: URL(filePath: "\(prefix)-\(suffix).png"))
+                }
+                if let format = ExportSettings.Format(rawValue: mode) {
+                    if format.hasVideo { store.exportSettings.videoFormat = format } else { store.exportSettings.audioFormat = format }
+                    store.exportSettings.isAudioOnly = !format.hasVideo
+                }
+                store.requestExport()
+                try? await Task.sleep(for: .milliseconds(600))
+                capture("export")
+                if mode == "sheet" {
+                    // An open sheet would hold up quitting.
+                    store.isExportSheetShown = false
+                } else {
+                    let folder = URL(filePath: prefix).deletingLastPathComponent()
+                    let destination = (mode == "fail" ? folder.appending(path: "Missing Folder") : folder)
+                        .appending(path: "Exported.\(store.exportFormat.fileExtension)")
+                    let started = Date()
+                    store.export(to: destination)
+                    try? await Task.sleep(for: .milliseconds(400))
+                    capture("export-progress")
+                    var fractions: [Double] = []
+                    while store.isExporting, Date().timeIntervalSince(started) < 300 {
+                        fractions.append(store.exportProgress?.fraction ?? 0)
+                        try? await Task.sleep(for: .milliseconds(250))
+                    }
+                    let asset = AVURLAsset(url: destination)
+                    let size = (try? FileManager.default.attributesOfItem(atPath: destination.path)[.size] as? Int) ?? 0
+                    var loudness: Double?
+                    if let tracks = try? await asset.loadTracks(withMediaType: .audio), let track = tracks.first {
+                        let output = AVAssetReaderTrackOutput(track: track, outputSettings: PCMReader.floatSettings(sampleRate: 48_000, channels: 2))
+                        var meter = LoudnessMeter(sampleRate: 48_000, channels: 2)
+                        try? await PCMReader.read(asset, output: output) { meter.add($0) }
+                        loudness = meter.integratedLoudness
+                    }
+                    let video = try? await asset.loadTracks(withMediaType: .video).first?.load(.naturalSize)
+                    exportReport = [
+                        "file": destination.lastPathComponent,
+                        "bytes": size,
+                        "seconds": Date().timeIntervalSince(started),
+                        "duration": (try? await asset.load(.duration).seconds) ?? 0,
+                        "projectDuration": store.project.duration.seconds,
+                        "loudness": loudness ?? -999,
+                        "videoSize": video.map { [Double($0.width), Double($0.height)] } ?? [],
+                        "sheetShown": store.isExportSheetShown,
+                        "alert": store.alert?.message ?? "",
+                        "toast": [store.toast?.title ?? "", store.toast?.detail ?? "", store.toast?.file?.lastPathComponent ?? ""],
+                        "fractions": fractions.map { ($0 * 100).rounded() / 100 },
+                    ]
+                    try? await Task.sleep(for: .milliseconds(500))
+                    if let window = NSApplication.shared.windows.first(where: { $0.isVisible && $0.attachedSheet == nil }),
+                       let view = window.contentView?.superview ?? window.contentView,
+                       let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+                        view.cacheDisplay(in: view.bounds, to: bitmap)
+                        try? bitmap.representation(using: .png, properties: [:])?.write(to: URL(filePath: "\(prefix)-export-done.png"))
+                    }
+                }
+            }
+
             // OVERLAP_SNAPSHOT_TAB=master or titles opens the Audio or Text tab with nothing selected, showing the
             // master volume or the title styles.
             if let empty = ["master": PanelTab.audio, "titles": .text][environment["OVERLAP_SNAPSHOT_TAB"] ?? ""], let store = document?.store {
@@ -123,6 +192,23 @@ enum DebugSnapshot {
                 store.select([clip.id])
                 try? await Task.sleep(for: .milliseconds(300))
             }
+            // OVERLAP_SNAPSHOT_ISOLATE=1 turns voice isolation on for the selected clips, then plays two seconds.
+            var isolationReport: [String: Any] = [:]
+            if environment["OVERLAP_SNAPSHOT_ISOLATE"] != nil, let store = document?.store {
+                store.setIsolatesVoice(true)
+                try? await Task.sleep(for: .milliseconds(600))
+                let before = store.playback.currentTime.seconds
+                store.playback.togglePlay()
+                try? await Task.sleep(for: .seconds(2))
+                isolationReport = [
+                    "isolated": store.project.tracks.flatMap(\.clips).filter(\.isolatesVoice).count,
+                    "played": store.playback.currentTime.seconds - before,
+                    "isPlaying": store.playback.isPlaying,
+                    "error": store.playback.player.currentItem?.error?.localizedDescription ?? "",
+                ]
+                store.playback.pause()
+            }
+
             // OVERLAP_SNAPSHOT_SPEEDPREVIEW=<speed> drags the selected clip's speed there without letting go.
             // The timeline should show the new length while the project keeps the old one.
             var speedReport: [String: Any] = [:]
@@ -373,6 +459,8 @@ enum DebugSnapshot {
                     "speedPreview": speedReport,
                     "handle": handleReport,
                     "textEdit": textEditReport,
+                    "export": exportReport,
+                    "isolation": isolationReport,
                     "windowTitle": store.windowTitle,
                     "titleEdit": titleEdit,
                     "fileURL": document?.fileURL?.path ?? "",

@@ -324,4 +324,13 @@ struct SliderDetentTests {
         #expect(BoxSlider.detent(for: 45, among: [-90, 0, 90], reach: 3) == nil)
         #expect(BoxSlider.detent(for: 0.5, among: [], reach: 1) == nil)
     }
+
+    @Test func speedCatchesAtTheUsualSpeeds() {
+        // The speed slider works in powers of two; a drag near 150% lands on exactly 1.5.
+        let stops = SpeedSection.usualSpeeds.map(log2)
+        let caught = BoxSlider.detent(for: log2(1.47), among: stops, reach: 0.05)
+        #expect(caught.map(SpeedSection.speed(atSliderValue:)) == 1.5)
+        #expect(SpeedSection.usualSpeeds.map { SpeedSection.speed(atSliderValue: log2($0)) } == [0.5, 1, 1.5, 2])
+        #expect(BoxSlider.detent(for: log2(1.25), among: stops, reach: 0.05) == nil)
+    }
 }

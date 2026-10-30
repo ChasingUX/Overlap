@@ -10,6 +10,7 @@ struct TimelineSnapshot {
     var isPlaying: Bool
     var pixelsPerSecond: Double
     var waveforms: [UUID: Waveform]
+    var isolatedWaveforms: [UUID: Waveform]
     var thumbnails: [UUID: CGImage]
     var filmstrips: [UUID: Filmstrip]
     var heightScale: Double
@@ -100,6 +101,7 @@ struct TimelineRepresentable: NSViewRepresentable {
             isPlaying: store.playback.isPlaying,
             pixelsPerSecond: store.pixelsPerSecond,
             waveforms: store.waveforms,
+            isolatedWaveforms: store.isolatedWaveforms,
             thumbnails: store.thumbnails,
             filmstrips: store.filmstrips,
             heightScale: heightScale,

@@ -52,6 +52,8 @@ struct Clip: Identifiable, Hashable, Sendable, Codable {
     var fill: BackgroundFill?
     /// How the picture changes in a crossfade into this clip; nil dissolves.
     var crossfadeVideoStyle: VideoTransition?
+    /// Keeps speech and takes out background noise, music and room echo, with Apple's voice isolation.
+    var isolatesVoice = false
 
     static let speedRange = 0.25...4.0
     /// The asset ID of text and background clips, which show what they hold instead of a file.
@@ -86,6 +88,7 @@ extension Clip {
         title = try container.decodeIfPresent(Title.self, forKey: .title)
         fill = try container.decodeIfPresent(BackgroundFill.self, forKey: .fill)
         crossfadeVideoStyle = try container.decodeIfPresent(VideoTransition.self, forKey: .crossfadeVideoStyle)
+        isolatesVoice = try container.decodeIfPresent(Bool.self, forKey: .isolatesVoice) ?? false
     }
 }
 
@@ -121,6 +124,11 @@ struct Project: Equatable, Sendable, Codable {
     /// What shows behind the picture; nil is none, and the canvas is black where nothing covers it.
     var background: BackgroundFill?
     var frame = PictureFrame()
+    /// Whether exports are brought to `loudnessTarget`. Off leaves the mix as it plays.
+    var normalizesLoudness = true
+
+    /// The loudness exports are brought to, in LUFS: the level YouTube and streaming services play at.
+    static let loudnessTarget = -14.0
 
     /// The size and frame rate pictures are composed at, until a video sets one.
     static let defaultCanvas = Canvas(width: 1920, height: 1080, frameRate: 30)
@@ -201,6 +209,7 @@ extension Project {
         canvasAspect = try container.decodeIfPresent(CanvasAspect.self, forKey: .canvasAspect) ?? .auto
         background = try container.decodeIfPresent(BackgroundFill.self, forKey: .background)
         frame = try container.decodeIfPresent(PictureFrame.self, forKey: .frame) ?? PictureFrame()
+        normalizesLoudness = try container.decodeIfPresent(Bool.self, forKey: .normalizesLoudness) ?? true
     }
 }
 

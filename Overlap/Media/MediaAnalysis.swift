@@ -127,4 +127,74 @@ enum MediaAnalysis {
         if count > 0 { peaks.append(min(currentPeak, 1)) }
         return Waveform(peaksPerSecond: peaksPerSecond, peaks: peaks)
     }
+
+    /// How a recording looks with Isolate voice on: read as 48 kHz mono, run through voice isolation, and kept as
+    /// 100 peaks per second. The isolated sound comes out late, so that much of the start is skipped and the peaks
+    /// line up with the original's.
+    @concurrent
+    static func isolatedWaveform(for url: URL) async -> Waveform? {
+        let sampleRate = 48_000.0
+        let peaksPerSecond = 100.0
+        let block = 4096
+        let asset = AVURLAsset(url: url)
+        guard let track = try? await asset.loadTracks(withMediaType: .audio).first,
+              let isolation = VoiceIsolation(format: VoiceIsolation.format(sampleRate: sampleRate, channels: 1), maximumFrames: block) else { return nil }
+        let output = AVAssetReaderTrackOutput(track: track, outputSettings: PCMReader.floatSettings(sampleRate: sampleRate, channels: 1))
+
+        let latency = Int((isolation.latency * sampleRate).rounded())
+        let samplesPerPeak = Int(sampleRate / peaksPerSecond)
+        var peaks: [Float] = []
+        var currentPeak: Float = 0
+        var count = 0
+        var skipped = 0
+        var position = 0.0
+        let list = AudioBufferList.allocate(maximumBuffers: 1)
+        let data = UnsafeMutablePointer<Float>.allocate(capacity: block)
+        defer {
+            data.deallocate()
+            free(list.unsafeMutablePointer)
+        }
+        /// Isolates the first `frames` samples in `data` and adds what comes out to the peaks.
+        func run(_ frames: Int) {
+            list[0] = AudioBuffer(mNumberChannels: 1, mDataByteSize: UInt32(frames * 4), mData: data)
+            isolation.process(list.unsafeMutablePointer, frames: frames, start: position)
+            position += Double(frames)
+            for index in 0..<frames {
+                guard skipped >= latency else {
+                    skipped += 1
+                    continue
+                }
+                currentPeak = max(currentPeak, abs(data[index]))
+                count += 1
+                if count == samplesPerPeak {
+                    peaks.append(min(currentPeak, 1))
+                    currentPeak = 0
+                    count = 0
+                }
+            }
+        }
+        do {
+            try await PCMReader.read(asset, output: output) { samples in
+                var start = 0
+                while start < samples.count {
+                    let frames = min(block, samples.count - start)
+                    data.update(from: samples.baseAddress! + start, count: frames)
+                    run(frames)
+                    start += frames
+                }
+            }
+        } catch {
+            return nil
+        }
+        // Silence pushes the last of the isolated sound through.
+        var remaining = latency
+        while remaining > 0 {
+            let frames = min(block, remaining)
+            data.update(repeating: 0, count: frames)
+            run(frames)
+            remaining -= frames
+        }
+        if count > 0 { peaks.append(min(currentPeak, 1)) }
+        return Waveform(peaksPerSecond: peaksPerSecond, peaks: peaks)
+    }
 }

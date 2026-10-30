@@ -1,14 +1,22 @@
 import SwiftUI
 
-/// Speed for the selected clips: a slider from 25% to 400%, quick choices, and pitch correction for clips with
-/// sound. The timeline shows a dragged speed at once; it's committed as one change on release.
+/// Speed for the selected clips: a slider from 25% to 400% that catches at the usual speeds, and pitch correction
+/// for clips with sound. The timeline shows a dragged speed at once; it's committed as one change on release.
 struct SpeedSection: View {
     let store: ProjectStore
 
-    private static let quickSpeeds = [0.5, 1, 1.5, 2]
+    /// Where the slider catches, with a tap on a Force Touch trackpad.
+    nonisolated static let usualSpeeds = [0.5, 1, 1.5, 2]
 
     private var speed: Double {
         store.selectedClips.first?.speed ?? 1
+    }
+
+    /// The speed at a place on the slider. A usual speed comes back exactly, not a hair off, once it's been
+    /// through the slider's powers of two.
+    nonisolated static func speed(atSliderValue value: Double) -> Double {
+        let speed = exp2(value)
+        return usualSpeeds.first { abs($0 - speed) < 1e-9 } ?? speed
     }
 
     var body: some View {
@@ -20,14 +28,10 @@ struct SpeedSection: View {
                 range: log2(Clip.speedRange.lowerBound)...log2(Clip.speedRange.upperBound),
                 format: { "\(Int((exp2($0) * 100).rounded()))%" },
                 defaultValue: 0,
-                onChange: { store.speedPreview = exp2($0) },
-                onCommit: { store.setSpeed(exp2($0)) },
-                onEnd: { store.speedPreview = nil }
-            )
-            OptionRow(
-                options: Self.quickSpeeds.map { ("\($0.formatted(.number.precision(.fractionLength(0...1))))×", $0) },
-                selected: Self.quickSpeeds.first { abs($0 - speed) < 0.001 },
-                onSelect: { store.setSpeed($0) }
+                onChange: { store.speedPreview = Self.speed(atSliderValue: $0) },
+                onCommit: { store.setSpeed(Self.speed(atSliderValue: $0)) },
+                onEnd: { store.speedPreview = nil },
+                detents: Self.usualSpeeds.map(log2)
             )
             if store.selectedClips.contains(where: store.project.playsSound) {
                 ToggleRow(title: "Keep pitch", isOn: store.selectedClips.first?.preservesPitch ?? true) {
@@ -89,6 +93,18 @@ struct ComingLater: View {
         Text(text)
             .font(.system(size: 12))
             .foregroundStyle(.tertiary)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+/// A short line of help under a group of controls.
+struct PanelNote: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(.system(size: 12))
+            .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
     }
 }

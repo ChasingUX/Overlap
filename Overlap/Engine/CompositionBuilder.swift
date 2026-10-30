@@ -26,6 +26,8 @@ enum CompositionBuilder {
     private struct AudioSlot: Hashable {
         var slot: Int
         var keepsPitch: Bool
+        /// A clip whose voice is isolated gets a composition track, and a tap, of its own.
+        var isolatedClip: UUID?
     }
 
     private struct LoadedAsset {
@@ -96,11 +98,18 @@ enum CompositionBuilder {
                         }
                     }
                     if clip.usesAudio, let sourceAudio = source.audio {
-                        let audioSlot = AudioSlot(slot: slot, keepsPitch: clip.preservesPitch || clip.speed == 1)
+                        let audioSlot = AudioSlot(slot: slot, keepsPitch: clip.preservesPitch || clip.speed == 1,
+                                                  isolatedClip: clip.isolatesVoice ? clip.id : nil)
                         let target = audioTracks[audioSlot] ?? composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)
                         audioTracks[audioSlot] = target
                         if let target {
-                            try insert(sourceRange, of: sourceAudio, into: target, at: clip)
+                            if clip.isolatesVoice {
+                                let asset = project.asset(clip.assetID)
+                                let lead = VoiceIsolation.latency(sampleRate: asset?.sampleRate ?? 48_000, channels: min(max(asset?.channelCount ?? 2, 1), 2))
+                                try insert(sourceRange, of: sourceAudio, into: target, at: clip, ahead: lead)
+                            } else {
+                                try insert(sourceRange, of: sourceAudio, into: target, at: clip)
+                            }
                             let prototype = Fade(duration: Time(seconds: 2), curve: .sCurve)
                             var segment = GainSegment(
                                 clip: clip,
@@ -133,7 +142,8 @@ enum CompositionBuilder {
             for (audioSlot, audioTrack) in audioTracks {
                 let parameters = AVMutableAudioMixInputParameters(track: audioTrack)
                 parameters.audioTimePitchAlgorithm = audioSlot.keepsPitch ? .spectral : .varispeed
-                parameters.audioTapProcessor = AudioTap.make(program: GainProgram(segments: segments[audioSlot] ?? []), master: options.master)
+                parameters.audioTapProcessor = AudioTap.make(program: GainProgram(segments: segments[audioSlot] ?? []), master: options.master,
+                                                             isolatesVoice: audioSlot.isolatedClip != nil)
                 audioParameters.append(parameters)
             }
         }
@@ -231,6 +241,37 @@ enum CompositionBuilder {
             (result.naturalSize, result.preferredTransform) = try await video.load(.naturalSize, .preferredTransform)
         }
         return result
+    }
+
+    /// Voice isolation hands its sound back late, so an isolated clip's sound goes in that much early and comes out on
+    /// time. Its track is its own, and runs on to the clip's end so the last of the sound gets through: on a bit
+    /// of the same media, since an empty stretch at a track's end isn't played, and what comes out of it lands
+    /// after the clip, where its volume is zero. A clip right at the start of the timeline loses the sliver that
+    /// can't go any earlier.
+    private static func insert(_ range: CMTimeRange, of source: AVAssetTrack, into track: AVMutableCompositionTrack, at clip: Clip, ahead lead: Double) throws {
+        let lead = CMTime(seconds: lead, preferredTimescale: 48_000)
+        var start = clip.start.cmTime - lead
+        var range = range
+        var duration = clip.duration.cmTime
+        if start < .zero {
+            let skipped = CMTime.zero - start
+            range = CMTimeRange(start: range.start + CMTimeMultiplyByFloat64(skipped, multiplier: clip.speed),
+                                duration: range.duration - CMTimeMultiplyByFloat64(skipped, multiplier: clip.speed))
+            duration = duration - skipped
+            start = .zero
+        }
+        if start > .zero {
+            track.insertEmptyTimeRange(CMTimeRange(start: .zero, end: start))
+        }
+        try track.insertTimeRange(range, of: source, at: start)
+        if clip.speed != 1 {
+            track.scaleTimeRange(CMTimeRange(start: start, duration: range.duration), toDuration: duration)
+        }
+        let tail = CMTimeMinimum(CMTimeMultiplyByFloat64(lead, multiplier: clip.speed), range.duration)
+        try track.insertTimeRange(CMTimeRange(start: range.start, duration: tail), of: source, at: start + duration)
+        if clip.speed != 1 {
+            track.scaleTimeRange(CMTimeRange(start: start + duration, duration: tail), toDuration: lead)
+        }
     }
 
     /// Inserts a clip's source range at its start, padding the track with an empty edit after a gap,

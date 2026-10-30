@@ -74,6 +74,10 @@ final class ProjectDocument: NSDocument {
         store.presentImportPanel()
     }
 
+    @objc func exportProject(_ sender: Any?) {
+        store.requestExport()
+    }
+
     @objc func togglePlayback(_ sender: Any?) {
         store.playback.togglePlay()
     }

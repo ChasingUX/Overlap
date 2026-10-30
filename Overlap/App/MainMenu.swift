@@ -60,6 +60,7 @@ enum MainMenu {
         menu.addItem(item("Revert to Saved", #selector(NSDocument.revertToSaved(_:))))
         menu.addItem(.separator())
         menu.addItem(item("Import…", #selector(ProjectDocument.importMedia(_:)), "i"))
+        menu.addItem(item("Export…", #selector(ProjectDocument.exportProject(_:)), "e"))
         return menu
     }
 

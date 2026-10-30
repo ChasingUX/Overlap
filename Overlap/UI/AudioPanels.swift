@@ -180,9 +180,14 @@ struct AudioClipPanel: View {
                 if !store.applicableTabs.contains(.video) {
                     SpeedSection(store: store)
                 }
+                if store.selectedClips.contains(where: store.project.playsSound) {
+                    ToggleRow(title: "Isolate voice", isOn: store.selectedClips.contains(where: \.isolatesVoice)) {
+                        store.setIsolatesVoice($0)
+                    }
+                    .help("Keeps speech and takes out background noise, music and room echo")
+                }
             }
             TrackSection(store: store)
-            ComingLater(text: "Effects and voice cleanup arrive in milestone 5.")
         }
     }
 }
@@ -197,8 +202,14 @@ struct MasterPanel: View {
                 DecibelSlider(title: "Volume", volume: store.project.masterVolume,
                               onDrag: { store.playback.setMasterVolume($0) },
                               onCommit: { store.setMasterVolume($0) })
+                ToggleRow(title: "Normalize loudness", isOn: store.project.normalizesLoudness) {
+                    store.setNormalizesLoudness($0)
+                }
+                if store.project.normalizesLoudness {
+                    PanelNote(text: "Exports are brought to −14 LUFS, the level YouTube and streaming services play at, with peaks kept under −1 dBTP.")
+                }
             }
-            ComingLater(text: "Select an audio clip, or a video with sound, for its volume. Loudness targets arrive in milestone 5.")
+            PanelNote(text: "Select an audio clip, or a video with sound, for its own volume.")
         }
     }
 }

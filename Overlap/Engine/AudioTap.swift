@@ -100,16 +100,20 @@ final class MasterGain: Sendable {
     }
 }
 
-/// State shared with the tap's real-time callbacks. Written once in `prepare`, then only read.
+/// State shared with the tap's real-time callbacks. Written in `prepare` and `unprepare`, and otherwise only
+/// used from the tap's own thread.
 private final class TapContext: @unchecked Sendable {
     let program: GainProgram
     let master: MasterGain?
+    let isolatesVoice: Bool
     var sampleRate: Double = 48_000
     var isFloat32 = false
+    var isolation: VoiceIsolation?
 
-    init(program: GainProgram, master: MasterGain?) {
+    init(program: GainProgram, master: MasterGain?, isolatesVoice: Bool) {
         self.program = program
         self.master = master
+        self.isolatesVoice = isolatesVoice
     }
 
     static func from(_ tap: MTAudioProcessingTap) -> TapContext {
@@ -117,12 +121,13 @@ private final class TapContext: @unchecked Sendable {
     }
 }
 
-/// Builds processing taps that apply a `GainProgram` sample by sample to a composition audio track.
-/// The same tap runs during playback and when reading audio for export, so both sound identical.
+/// Builds processing taps that isolate voices, if asked, then apply a `GainProgram` sample by sample to a
+/// composition audio track. The same tap runs during playback and when reading audio for export, so both sound
+/// identical. Isolation comes first, so fades and volume shape the isolated voice.
 enum AudioTap {
     /// `master`, when given, scales everything the tap plays, live.
-    static func make(program: GainProgram, master: MasterGain? = nil) -> MTAudioProcessingTap? {
-        let context = Unmanaged.passRetained(TapContext(program: program, master: master))
+    static func make(program: GainProgram, master: MasterGain? = nil, isolatesVoice: Bool = false) -> MTAudioProcessingTap? {
+        let context = Unmanaged.passRetained(TapContext(program: program, master: master, isolatesVoice: isolatesVoice))
         var callbacks = MTAudioProcessingTapCallbacks(
             version: kMTAudioProcessingTapCallbacksVersion_0,
             clientInfo: context.toOpaque(),
@@ -132,15 +137,20 @@ enum AudioTap {
             finalize: { tap in
                 Unmanaged<TapContext>.fromOpaque(MTAudioProcessingTapGetStorage(tap)).release()
             },
-            prepare: { tap, _, format in
+            prepare: { tap, maximumFrames, format in
                 let context = TapContext.from(tap)
                 let description = format.pointee
                 context.sampleRate = description.mSampleRate
                 context.isFloat32 = description.mFormatID == kAudioFormatLinearPCM
                     && description.mFormatFlags & kAudioFormatFlagIsFloat != 0
                     && description.mBitsPerChannel == 32
+                if context.isolatesVoice {
+                    context.isolation = VoiceIsolation(format: description, maximumFrames: Int(maximumFrames))
+                }
             },
-            unprepare: { _ in },
+            unprepare: { tap in
+                TapContext.from(tap).isolation = nil
+            },
             process: { tap, frameCount, _, bufferList, frameCountOut, flagsOut in
                 var timeRange = CMTimeRange.zero
                 let status = MTAudioProcessingTapGetSourceAudio(tap, frameCount, bufferList, flagsOut, &timeRange, frameCountOut)
@@ -151,6 +161,7 @@ enum AudioTap {
                 let frames = Int(frameCountOut.pointee)
                 let start = timeRange.start.seconds
                 let sampleRate = context.sampleRate
+                context.isolation?.process(bufferList, frames: frames, start: start * sampleRate)
                 let master = context.master?.value ?? 1
                 withUnsafeTemporaryAllocation(of: Float.self, capacity: frames) { gains in
                     for frame in 0..<frames {

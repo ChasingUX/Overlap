@@ -764,7 +764,9 @@ final class TimelineView: NSView {
         } else if isAudio {
             waveformArea = CGRect(x: rect.minX, y: rect.minY + 16, width: rect.width, height: rect.height - 18)
         }
-        if hasSound, let waveform = snapshot.waveforms[clip.assetID], waveformArea.height > 4 {
+        // With Isolate voice on, the clip shows the isolated sound once it's worked out, and its own until then.
+        let waveform = (clip.isolatesVoice ? snapshot.isolatedWaveforms[clip.assetID] : nil) ?? snapshot.waveforms[clip.assetID]
+        if hasSound, let waveform, waveformArea.height > 4 {
             // The waveform follows the clip's gain, so fades and crossfades look the way they sound.
             var gain = GainSegment(clip: clip, fadeIn: clip.playedFade(.start, crossfades: crossfades),
                                    fadeOut: clip.playedFade(.end, crossfades: crossfades))

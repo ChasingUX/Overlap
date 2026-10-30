@@ -49,6 +49,12 @@ struct ProjectWindowView: View {
         .background(Color(nsColor: Theme.chrome))
         .overlay(alignment: .top) { Hairline() }
         .animation(Motion.layout, value: store.project.hasVisualClips)
+        .overlay(alignment: .bottom) {
+            ToastOverlay(store: store)
+        }
+        .sheet(isPresented: $store.isExportSheetShown) {
+            ExportSheet(store: store)
+        }
         .alert(item: $store.alert) { alert in
             Alert(title: Text(alert.title), message: Text(alert.message))
         }
