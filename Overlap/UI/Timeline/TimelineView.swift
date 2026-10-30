@@ -51,6 +51,8 @@ final class TimelineView: NSView {
     private enum DropContent {
         case asset(Asset)
         case files([URL])
+        case title(TitleStyle)
+        case fill(BackgroundFill)
     }
 
     private let store: ProjectStore
@@ -719,6 +721,10 @@ final class TimelineView: NSView {
 
         NSGraphicsContext.saveGraphicsState()
         path.addClip()
+        // A background clip shows its color, gradient or wallpaper.
+        if let fill = clip.fill {
+            drawFill(fill, in: rect)
+        }
         var waveformArea = rect.insetBy(dx: 0, dy: 4)
         let filmstrip = snapshot.filmstrips[clip.assetID]
         let thumbnail = snapshot.thumbnails[clip.assetID]
@@ -755,13 +761,39 @@ final class TimelineView: NSView {
             stroke.lineWidth = 1
         }
         stroke.stroke()
-        var name = label ?? asset?.displayName ?? "Missing media"
+        var name = label ?? asset?.displayName
+            ?? clip.title.map { $0.text.split(separator: "\n").first.map(String.init) ?? "Text" }
+            ?? (clip.fill != nil ? "Background" : "Missing media")
         if clip.speed != 1 {
             name += "  \(clip.speed.formatted(.number.precision(.fractionLength(0...2))))×"
         }
         // An incoming clip's name starts after its crossfade, which draws over the clip's start.
         let crossfadeIn = crossfades.first { $0.incoming.id == clip.id }
-        drawLabel(name, in: rect, overImage: hasFrames, leadingInset: crossfadeIn.map { CGFloat($0.range.duration.seconds) * pixelsPerSecond } ?? 0)
+        drawLabel(name, in: rect, overImage: hasFrames || clip.fill != nil, leadingInset: crossfadeIn.map { CGFloat($0.range.duration.seconds) * pixelsPerSecond } ?? 0)
+    }
+
+    private func drawFill(_ fill: BackgroundFill, in rect: CGRect) {
+        func color(_ rgba: RGBA) -> NSColor {
+            NSColor(srgbRed: rgba.red, green: rgba.green, blue: rgba.blue, alpha: rgba.alpha)
+        }
+        switch fill {
+        case let .color(rgba):
+            color(rgba).setFill()
+            rect.fill(using: .sourceOver)
+        case let .gradient(gradient):
+            // The view is flipped, so the angle runs clockwise from the right, as the gradient's does.
+            NSGradient(starting: color(gradient.from), ending: color(gradient.to))?.draw(in: rect, angle: gradient.angle)
+        case let .wallpaper(id):
+            guard let image = snapshot.thumbnails[id], let context = NSGraphicsContext.current?.cgContext else { return }
+            let scale = max(rect.width / CGFloat(image.width), rect.height / CGFloat(image.height))
+            let size = CGSize(width: CGFloat(image.width) * scale, height: CGFloat(image.height) * scale)
+            let target = CGRect(x: rect.midX - size.width / 2, y: rect.midY - size.height / 2, width: size.width, height: size.height)
+            context.saveGState()
+            context.translateBy(x: 0, y: target.maxY)
+            context.scaleBy(x: 1, y: -1)
+            context.draw(image, in: CGRect(x: target.minX, y: 0, width: target.width, height: target.height))
+            context.restoreGState()
+        }
     }
 
     /// Tiles frames across the clip, each showing the moment at its own position on the timeline.
@@ -960,6 +992,10 @@ final class TimelineView: NSView {
             selection = [clip.id]
         }
         store.select(selection)
+        // Double-clicking a clip opens the tab that edits it, from anywhere.
+        if event.clickCount == 2 {
+            store.showMainTab()
+        }
         interaction = .pressingClip(id: clip.id, grabTime: time(atX: point.x) - clip.start, grabY: point.y - row.rect.minY, downPoint: point)
     }
 
@@ -1286,8 +1322,10 @@ final class TimelineView: NSView {
 
     private func dropContent(_ info: NSDraggingInfo) -> DropContent? {
         let pasteboard = info.draggingPasteboard
-        if let string = pasteboard.string(forType: .string), let id = TimelineDrag.assetID(from: string), let asset = project.asset(id) {
-            return .asset(asset)
+        if let string = pasteboard.string(forType: .string) {
+            if let id = TimelineDrag.assetID(from: string), let asset = project.asset(id) { return .asset(asset) }
+            if let style = TimelineDrag.titleStyle(from: string) { return .title(style) }
+            if let fill = TimelineDrag.fill(from: string) { return .fill(fill) }
         }
         let urls = (pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? [])
             .filter(MediaImporter.isSupported)
@@ -1305,7 +1343,13 @@ final class TimelineView: NSView {
         var label: String?
         switch content {
         case let .asset(asset):
-            clip = Clip(assetID: asset.id, start: .zero, sourceStart: .zero, duration: asset.duration)
+            clip = Clip(assetID: asset.id, start: .zero, sourceStart: .zero, duration: asset.kind == .image ? Clip.stillDuration : asset.duration)
+        case let .title(style):
+            clip = Clip(assetID: Clip.noAsset, start: .zero, sourceStart: .zero, duration: Clip.stillDuration)
+            clip.title = style.title
+        case let .fill(fill):
+            clip = Clip(assetID: Clip.noAsset, start: .zero, sourceStart: .zero, duration: Clip.stillDuration)
+            clip.fill = fill
         case let .files(urls):
             // Files from Finder haven't been read yet, so they show as a placeholder until they're imported.
             clip = Clip(assetID: UUID(), start: .zero, sourceStart: .zero, duration: Time(seconds: 4))
@@ -1344,6 +1388,10 @@ final class TimelineView: NSView {
             store.addClip(asset: asset.id, at: dragPreview.clip.start, target: dragPreview.target)
         case let .files(urls):
             store.importFiles(urls, placement: (dragPreview.clip.start, dragPreview.target))
+        case let .title(style):
+            store.addTitle(style, at: dragPreview.clip.start, target: dragPreview.target)
+        case let .fill(fill):
+            store.addBackground(fill, at: dragPreview.clip.start, target: dragPreview.target)
         }
         return true
     }
@@ -1351,7 +1399,6 @@ final class TimelineView: NSView {
 
 #if DEBUG
 extension TimelineView {
-    /// The top track's height as drawn right now.
     /// The right-click menu for the first selected clip, as text: one line per item, checked items marked,
     /// submenu items indented.
     func debugMenuLines() -> [String] {
@@ -1376,6 +1423,7 @@ extension TimelineView {
         Double(snapshot.coveredWidth)
     }
 
+    /// The top track's height as drawn right now.
     var debugTopRowHeight: Double {
         Double(rows.first?.rect.height ?? 0)
     }

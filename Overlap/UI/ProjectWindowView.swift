@@ -26,7 +26,7 @@ struct ProjectWindowView: View {
             // The rail and panel are as tall as the preview, or the whole window without one.
             let top = showsPreview ? clampedPreviewHeight(in: size.height) : size.height
             ZStack(alignment: .topLeading) {
-                PreviewView(playback: store.playback,
+                PreviewView(store: store,
                             aspectRatio: store.project.canvas.map { CGFloat($0.width) / CGFloat(max($0.height, 1)) })
                     .frame(width: max(0, size.width - side), height: showsPreview ? top : 0)
                     .opacity(showsPreview ? 1 : 0)

@@ -6,6 +6,8 @@ struct BuiltComposition {
     let videoComposition: AVVideoComposition?
     let audioMix: AVAudioMix?
     let duration: Time
+    /// What the compositor draws, shared with it so visual changes can show without a rebuild. Nil without pictures.
+    var plan: RenderPlanBox?
 }
 
 /// Turns the project model into an AVFoundation composition. Rebuilt after every edit.
@@ -25,6 +27,8 @@ enum CompositionBuilder {
     }
 
     private struct LoadedAsset {
+        /// Held for the whole build: a track only weakly refers to its asset, and can't be inserted once it's gone.
+        var asset: AVURLAsset
         var video: AVAssetTrack?
         var audio: AVAssetTrack?
         var naturalSize: CGSize = .zero
@@ -32,19 +36,30 @@ enum CompositionBuilder {
     }
 
     static func build(project: Project, assets: (UUID) -> AVURLAsset?, options: Options = Options()) async throws -> BuiltComposition {
+        // Media files are opened for their tracks; images and wallpapers only need their file.
         var loaded: [UUID: LoadedAsset] = [:]
-        for assetID in Set(project.tracks.flatMap(\.clips).map(\.assetID)) {
-            guard let asset = assets(assetID) else { continue }
-            loaded[assetID] = try await load(asset)
+        var urls: [UUID: URL] = [:]
+        var used = Set(project.tracks.flatMap(\.clips).map(\.assetID))
+        for fill in [project.background] + project.tracks.flatMap(\.clips).map(\.fill) {
+            if case let .wallpaper(id)? = fill { used.insert(id) }
+        }
+        for assetID in used {
+            guard let asset = assets(assetID), let kind = project.asset(assetID)?.kind else { continue }
+            urls[assetID] = asset.url
+            if kind != .image {
+                loaded[assetID] = try await load(asset)
+            }
         }
 
         let composition = AVMutableComposition()
-        let renderSize = CGSize(width: project.canvas?.width ?? 1920, height: project.canvas?.height ?? 1080)
-        var layerInstructions: [AVVideoCompositionLayerInstruction] = []
+        let canvas = project.canvas ?? Project.defaultCanvas
+        let renderSize = CGSize(width: canvas.width, height: canvas.height)
+        var layers: [RenderLayer] = []
+        // Where pictures start and end, for the instructions.
+        var edges: Set<Time> = [.zero]
         var audioParameters: [AVMutableAudioMixInputParameters] = []
 
-
-        // Tracks run bottom to top; layer instructions list the topmost layer first.
+        // Tracks run bottom to top, and so do the layers.
         for (trackIndex, track) in project.tracks.enumerated() {
             // Muted tracks, and tracks left out by a solo, stay in the composition (so its length holds) but go
             // invisible and silent.
@@ -53,62 +68,66 @@ enum CompositionBuilder {
             var videoTracks: [Int: AVMutableCompositionTrack] = [:]
             // Sound with and without pitch correction needs separate composition tracks, since the setting is per track.
             var audioTracks: [AudioSlot: AVMutableCompositionTrack] = [:]
-            var transforms: [Int: [(Time, CGAffineTransform)]] = [:]
-            var opacities: [Int: [(Time, Float)]] = [:]
             var segments: [AudioSlot: [GainSegment]] = [:]
 
             let clips = track.clips.sorted { $0.start < $1.start }
             let crossfades = project.crossfades(onTrack: trackIndex)
             for (index, clip) in clips.enumerated() {
-                guard let source = loaded[clip.assetID] else { continue }
                 let slot = index % 2
-                let sourceRange = CMTimeRange(start: clip.sourceStart.cmTime, duration: clip.sourceDuration.cmTime)
-                let outOf = crossfades.first { $0.outgoing.id == clip.id }
+                var picture: RenderLayer.Source?
+                if let title = clip.title {
+                    picture = .title(title)
+                } else if let fill = clip.fill {
+                    picture = resolve(fill, urls: urls).map { .fill($0) }
+                } else if project.asset(clip.assetID)?.kind == .image, let url = urls[clip.assetID] {
+                    picture = .image(url)
+                }
 
-                if clip.usesVideo, let sourceVideo = source.video {
-                    let target = videoTracks[slot] ?? composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid)
-                    videoTracks[slot] = target
-                    if let target {
-                        try insert(sourceRange, of: sourceVideo, into: target, at: clip)
-                        transforms[slot, default: []].append((clip.start, fitTransform(source, into: renderSize)))
-                        // Until milestone 4's dissolves, a video crossfade cuts to the incoming clip where the overlap starts.
-                        opacities[slot, default: []].append((clip.start, 1))
-                        if let outOf { opacities[slot, default: []].append((outOf.incoming.start, 0)) }
+                if let source = loaded[clip.assetID] {
+                    let sourceRange = CMTimeRange(start: clip.sourceStart.cmTime, duration: clip.sourceDuration.cmTime)
+                    if clip.usesVideo, let sourceVideo = source.video {
+                        let target = videoTracks[slot] ?? composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid)
+                        videoTracks[slot] = target
+                        if let target {
+                            try insert(sourceRange, of: sourceVideo, into: target, at: clip)
+                            picture = .video(trackID: target.trackID, orientation: orientation(of: source.preferredTransform))
+                        }
+                    }
+                    if clip.usesAudio, let sourceAudio = source.audio {
+                        let audioSlot = AudioSlot(slot: slot, keepsPitch: clip.preservesPitch || clip.speed == 1)
+                        let target = audioTracks[audioSlot] ?? composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)
+                        audioTracks[audioSlot] = target
+                        if let target {
+                            try insert(sourceRange, of: sourceAudio, into: target, at: clip)
+                            let prototype = Fade(duration: Time(seconds: 2), curve: .sCurve)
+                            var segment = GainSegment(
+                                clip: clip,
+                                fadeIn: options.prototypeFades ? prototype : clip.playedFade(.start, crossfades: crossfades),
+                                fadeOut: options.prototypeFades ? prototype : clip.playedFade(.end, crossfades: crossfades)
+                            )
+                            segment.volume = isActive ? clip.volume * track.volume * (options.master == nil ? project.masterVolume : 1) : 0
+                            segment.addCrossfades(crossfades, of: clip.id)
+                            segments[audioSlot, default: []].append(segment)
+                        }
                     }
                 }
-                if clip.usesAudio, let sourceAudio = source.audio {
-                    let audioSlot = AudioSlot(slot: slot, keepsPitch: clip.preservesPitch || clip.speed == 1)
-                    let target = audioTracks[audioSlot] ?? composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)
-                    audioTracks[audioSlot] = target
-                    if let target {
-                        try insert(sourceRange, of: sourceAudio, into: target, at: clip)
-                        let prototype = Fade(duration: Time(seconds: 2), curve: .sCurve)
-                        var segment = GainSegment(
-                            clip: clip,
-                            fadeIn: options.prototypeFades ? prototype : clip.playedFade(.start, crossfades: crossfades),
-                            fadeOut: options.prototypeFades ? prototype : clip.playedFade(.end, crossfades: crossfades)
-                        )
-                        segment.volume = isActive ? clip.volume * track.volume * (options.master == nil ? project.masterVolume : 1) : 0
-                        segment.addCrossfades(crossfades, of: clip.id)
-                        segments[audioSlot, default: []].append(segment)
+
+                if let picture, isActive {
+                    let transition = { (crossfade: Crossfade) in
+                        PictureTransition(start: crossfade.range.start.seconds, end: crossfade.range.end.seconds,
+                                          curve: crossfade.curve, style: crossfade.videoStyle)
                     }
+                    layers.append(RenderLayer(
+                        clipID: clip.id, source: picture, track: trackIndex,
+                        start: clip.start.seconds, end: clip.end.seconds, visual: clip.visual,
+                        transitionIn: crossfades.first { $0.incoming.id == clip.id }.map(transition),
+                        transitionOut: crossfades.first { $0.outgoing.id == clip.id }.map(transition)
+                    ))
+                    edges.insert(clip.start)
+                    edges.insert(clip.end)
                 }
             }
 
-            for (slot, videoTrack) in videoTracks.sorted(by: { $0.key < $1.key }) {
-                var layer = AVVideoCompositionLayerInstruction.Configuration(assetTrack: videoTrack)
-                for (time, transform) in transforms[slot] ?? [] {
-                    layer.setTransform(transform, at: time.cmTime)
-                }
-                if isActive {
-                    for (time, opacity) in opacities[slot] ?? [] {
-                        layer.setOpacity(opacity, at: time.cmTime)
-                    }
-                } else {
-                    layer.setOpacity(0, at: .zero)
-                }
-                layerInstructions.insert(AVVideoCompositionLayerInstruction(configuration: layer), at: 0)
-            }
             for (audioSlot, audioTrack) in audioTracks {
                 let parameters = AVMutableAudioMixInputParameters(track: audioTrack)
                 parameters.audioTimePitchAlgorithm = audioSlot.keepsPitch ? .spectral : .varispeed
@@ -118,17 +137,35 @@ enum CompositionBuilder {
         }
 
         var videoComposition: AVVideoComposition?
-        if !layerInstructions.isEmpty {
-            let instruction = AVVideoCompositionInstruction(configuration: .init(
-                backgroundColor: CGColor(gray: 0, alpha: 1),
-                layerInstructions: layerInstructions,
-                timeRange: CMTimeRange(start: .zero, duration: composition.duration)
+        var plan: RenderPlanBox?
+        if project.hasVisualClips, project.duration > .zero {
+            // A blank track under the whole timeline gives the compositor a frame to draw everywhere, gaps included.
+            let blank = AVURLAsset(url: try await BlankVideo.url())
+            let second = CMTimeRange(start: .zero, duration: CMTime(value: 1, timescale: 1))
+            guard let blankVideo = try await blank.loadTracks(withMediaType: .video).first,
+                  let base = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid) else {
+                throw CocoaError(.fileReadCorruptFile)
+            }
+            try base.insertTimeRange(second, of: blankVideo, at: .zero)
+            base.scaleTimeRange(second, toDuration: project.duration.cmTime)
+
+            let box = RenderPlanBox(RenderPlan(
+                canvas: renderSize,
+                background: project.background.flatMap { resolve($0, urls: urls) },
+                frame: project.frame,
+                layers: layers
             ))
+            edges.insert(Time(composition.duration))
             videoComposition = AVVideoComposition(configuration: .init(
-                frameDuration: frameDuration(for: project.canvas?.frameRate ?? 30),
-                instructions: [instruction],
+                colorPrimaries: AVVideoColorPrimaries_ITU_R_709_2,
+                colorTransferFunction: AVVideoTransferFunction_ITU_R_709_2,
+                colorYCbCrMatrix: AVVideoYCbCrMatrix_ITU_R_709_2,
+                customVideoCompositorClass: Compositor.self,
+                frameDuration: frameDuration(for: canvas.frameRate),
+                instructions: instructions(edges: edges, until: Time(composition.duration), layers: layers, baseTrack: base.trackID, plan: box),
                 renderSize: renderSize
             ))
+            plan = box
         }
 
         var audioMix: AVMutableAudioMix?
@@ -142,12 +179,45 @@ enum CompositionBuilder {
             composition: composition,
             videoComposition: videoComposition,
             audioMix: audioMix,
-            duration: Time(composition.duration)
+            duration: Time(composition.duration),
+            plan: plan
         )
     }
 
+    /// One instruction between each pair of neighboring edges, asking only for the video tracks playing there.
+    private static func instructions(edges: Set<Time>, until end: Time, layers: [RenderLayer],
+                                     baseTrack: CMPersistentTrackID, plan: RenderPlanBox) -> [CompositionInstruction] {
+        let times = edges.filter { $0 <= end }.sorted()
+        return zip(times, times.dropFirst()).map { start, stop in
+            let middle = (start.seconds + stop.seconds) / 2
+            let playing = layers.filter { $0.isActive(at: middle) }.compactMap { layer -> CMPersistentTrackID? in
+                if case let .video(trackID, _) = layer.source { trackID } else { nil }
+            }
+            return CompositionInstruction(timeRange: CMTimeRange(start: start.cmTime, end: stop.cmTime),
+                                          trackIDs: [baseTrack] + Set(playing).sorted(), plan: plan)
+        }
+    }
+
+    private static func resolve(_ fill: BackgroundFill, urls: [UUID: URL]) -> ResolvedFill? {
+        switch fill {
+        case let .color(color): .color(color)
+        case let .gradient(gradient): .gradient(gradient)
+        case let .wallpaper(id): urls[id].map { .image($0) }
+        }
+    }
+
+    /// The turn a video's stored frames need to stand upright.
+    private static func orientation(of transform: CGAffineTransform) -> CGImagePropertyOrientation {
+        switch (transform.a.rounded(), transform.b.rounded(), transform.c.rounded(), transform.d.rounded()) {
+        case (0, 1, -1, 0): .right
+        case (-1, 0, 0, -1): .down
+        case (0, -1, 1, 0): .left
+        default: .up
+        }
+    }
+
     private static func load(_ asset: AVURLAsset) async throws -> LoadedAsset {
-        var result = LoadedAsset()
+        var result = LoadedAsset(asset: asset)
         result.video = try await asset.loadTracks(withMediaType: .video).first
         result.audio = try await asset.loadTracks(withMediaType: .audio).first
         if let video = result.video {
@@ -167,19 +237,6 @@ enum CompositionBuilder {
         if clip.speed != 1 {
             track.scaleTimeRange(CMTimeRange(start: clip.start.cmTime, duration: range.duration), toDuration: clip.duration.cmTime)
         }
-    }
-
-    /// Scales a clip to fit the canvas, centered, after applying its own rotation.
-    private static func fitTransform(_ asset: LoadedAsset, into canvas: CGSize) -> CGAffineTransform {
-        let rotated = CGRect(origin: .zero, size: asset.naturalSize).applying(asset.preferredTransform)
-        guard rotated.width > 0, rotated.height > 0 else { return asset.preferredTransform }
-        let upright = asset.preferredTransform.concatenating(CGAffineTransform(translationX: -rotated.minX, y: -rotated.minY))
-        let scale = min(canvas.width / rotated.width, canvas.height / rotated.height)
-        let offsetX = (canvas.width - rotated.width * scale) / 2
-        let offsetY = (canvas.height - rotated.height * scale) / 2
-        return upright
-            .concatenating(CGAffineTransform(scaleX: scale, y: scale))
-            .concatenating(CGAffineTransform(translationX: offsetX, y: offsetY))
     }
 
     static func frameDuration(for rate: Double) -> CMTime {

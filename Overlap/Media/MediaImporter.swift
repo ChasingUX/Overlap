@@ -1,4 +1,5 @@
 import AVFoundation
+import ImageIO
 import UniformTypeIdentifiers
 
 enum ImportError: LocalizedError {
@@ -8,7 +9,7 @@ enum ImportError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case let .unsupportedFormat(name): "\(name) isn't a supported video or audio format."
+        case let .unsupportedFormat(name): "\(name) isn't a supported video, audio or image format."
         case let .noMediaTracks(name): "\(name) has no video or audio to import."
         case let .copyFailed(name, code): "\(name) couldn't be copied into the project (error \(code))."
         }
@@ -28,7 +29,7 @@ enum MediaImporter {
         var channelCount: Int?
     }
 
-    static let supportedTypes: [UTType] = [.movie, .audio]
+    static let supportedTypes: [UTType] = [.movie, .audio, .image]
 
     static func isSupported(_ url: URL) -> Bool {
         guard let type = UTType(filenameExtension: url.pathExtension) else { return false }
@@ -39,6 +40,20 @@ enum MediaImporter {
     static func probe(_ url: URL) async throws -> Probe {
         let name = url.lastPathComponent
         guard isSupported(url) else { throw ImportError.unsupportedFormat(name) }
+
+        if let type = UTType(filenameExtension: url.pathExtension), type.conforms(to: .image) {
+            guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+                  let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+                  let width = properties[kCGImagePropertyPixelWidth] as? Int,
+                  let height = properties[kCGImagePropertyPixelHeight] as? Int else {
+                throw ImportError.unsupportedFormat(name)
+            }
+            // Photos taken sideways store their pixels sideways; the probe reports the upright size.
+            let orientation = properties[kCGImagePropertyOrientation] as? Int ?? 1
+            let sideways = (5...8).contains(orientation)
+            return Probe(kind: .image, duration: .zero, hasAudio: false,
+                         pixelWidth: sideways ? height : width, pixelHeight: sideways ? width : height)
+        }
 
         let asset = AVURLAsset(url: url)
         let duration = try await asset.load(.duration)

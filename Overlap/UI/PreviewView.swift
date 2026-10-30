@@ -4,21 +4,23 @@ import SwiftUI
 /// The composed canvas at the playhead: a rounded frame, inset from the edges, on a neutral gray surround so
 /// footage colors read accurately.
 struct PreviewView: NSViewRepresentable {
-    let playback: PlaybackController
+    let store: ProjectStore
     /// The canvas's width over its height. The frame keeps this shape; 16:9 until there's a canvas.
     let aspectRatio: CGFloat?
 
     func makeNSView(context: Context) -> PlayerLayerView {
-        let view = PlayerLayerView(player: playback.player)
-        playback.onSwap = { [weak view] isSwapping in
+        let view = PlayerLayerView(player: store.playback.player, store: store)
+        store.playback.onSwap = { [weak view] isSwapping in
             if isSwapping { view?.swapDidBegin() } else { view?.swapDidEnd() }
         }
         return view
     }
 
     func updateNSView(_ view: PlayerLayerView, context: Context) {
-        view.playerLayer.player = playback.player
+        view.playerLayer.player = store.playback.player
         view.aspectRatio = aspectRatio
+        view.overlay.state = TransformOverlay.State(project: store.project, selection: store.selection,
+                                                    time: store.playback.currentTime, isCropping: store.isCropping)
     }
 }
 
@@ -27,6 +29,8 @@ final class PlayerLayerView: NSView {
     static let cornerRadius: CGFloat = 10
 
     let playerLayer = AVPlayerLayer()
+    /// The handles for the selected picture, laid over the video frame.
+    let overlay: TransformOverlay
     var aspectRatio: CGFloat? {
         didSet { if aspectRatio != oldValue { needsLayout = true } }
     }
@@ -38,7 +42,8 @@ final class PlayerLayerView: NSView {
     private var isSwapping = false
     private var readyObservation: NSKeyValueObservation?
 
-    init(player: AVPlayer) {
+    init(player: AVPlayer, store: ProjectStore) {
+        overlay = TransformOverlay(store: store)
         super.init(frame: .zero)
         wantsLayer = true
         playerLayer.player = player
@@ -51,6 +56,7 @@ final class PlayerLayerView: NSView {
         stillLayer.contentsGravity = .resizeAspect
         stillLayer.isHidden = true
         playerLayer.addSublayer(stillLayer)
+        addSubview(overlay)
         readyObservation = playerLayer.observe(\.isReadyForDisplay) { [weak self] _, _ in
             Task { @MainActor in self?.removeStillWhenReady() }
         }
@@ -123,6 +129,7 @@ final class PlayerLayerView: NSView {
             playerLayer.frame = CGRect(x: bounds.midX - size.width / 2, y: bounds.midY - size.height / 2, width: size.width, height: size.height)
             stillLayer.frame = playerLayer.bounds
         }
+        overlay.frame = playerLayer.frame
     }
 
     #if DEBUG

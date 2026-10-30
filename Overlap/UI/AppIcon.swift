@@ -18,6 +18,7 @@ enum AppIcon {
     case zoomOut
     case zoomIn
     case waveform
+    case image
 
     var symbolName: String {
         switch self {
@@ -35,6 +36,7 @@ enum AppIcon {
         case .zoomOut: "minus"
         case .zoomIn: "plus"
         case .waveform: "waveform"
+        case .image: "photo.fill"
         }
     }
 

@@ -21,10 +21,55 @@ enum DebugSnapshot {
                 document.store.playback.togglePlay()
                 try? await Task.sleep(for: .seconds(3))
             }
-            // OVERLAP_SNAPSHOT_TAB=master opens the Audio tab with nothing selected, showing the master volume.
-            if environment["OVERLAP_SNAPSHOT_TAB"] == "master", let store = document?.store {
+            // OVERLAP_SNAPSHOT_DEMO=pip builds the milestone 4 picture: the first video shrunk with rounded corners and
+            // a shadow over a gradient, inside a padded frame, with a title over it. The playhead moves to 2 s.
+            if environment["OVERLAP_SNAPSHOT_DEMO"] == "pip", let store = document?.store {
+                store.apply("Demo") { project in
+                    project.background = BackgroundFill.gradients[0]
+                    project.frame = PictureFrame(padding: 0.06, shadow: 60, corners: 0.03)
+                    for (trackIndex, track) in project.tracks.enumerated() {
+                        for (clipIndex, clip) in track.clips.enumerated() where project.asset(clip.assetID)?.kind == .video {
+                            project.tracks[trackIndex].clips[clipIndex].visual = Visual(x: 0.18, y: -0.04, scale: 0.55, corners: 0.05, shadow: 70)
+                        }
+                    }
+                    var title = TitleStyle.lowerThird.title
+                    title.text = "Overlap\nMilestone 4"
+                    title.animationIn = .none
+                    project.addTitle(title, visual: TitleStyle.lowerThird.visual, at: .zero, target: .new(at: project.tracks.count))
+                }
+                store.playback.seek(to: Time(seconds: 2))
+                try? await Task.sleep(for: .seconds(1))
+            }
+            // OVERLAP_SNAPSHOT_SELECT=video selects the video showing at the playhead and opens the Video tab.
+            // OVERLAP_SNAPSHOT_HANDLE=move or scale then drags it in the preview, 120 points right and 60 down.
+            var handleReport: [String: Any] = [:]
+            if environment["OVERLAP_SNAPSHOT_SELECT"] == "video", let store = document?.store,
+               let video = store.project.tracks.flatMap(\.clips).first(where: {
+                   store.project.asset($0.assetID)?.kind == .video && $0.start <= store.playback.currentTime && store.playback.currentTime < $0.end
+               }) {
+                store.select([video.id])
+                store.activeTab = .video
+                try? await Task.sleep(for: .milliseconds(400))
+                if let kind = environment["OVERLAP_SNAPSHOT_HANDLE"],
+                   let overlay = NSApplication.shared.windows.lazy.compactMap({ $0.contentView.flatMap { find(TransformOverlay.self, in: $0) } }).first {
+                    let before = store.project.clip(video.id)?.visual
+                    let dragged = overlay.debugDrag(fromCorner: kind == "scale", by: CGSize(width: 120, height: 60))
+                    try? await Task.sleep(for: .milliseconds(600))
+                    let after = store.project.clip(video.id)?.visual
+                    handleReport = [
+                        "dragged": dragged,
+                        "before": [before?.x ?? 0, before?.y ?? 0, before?.scale ?? 0],
+                        "after": [after?.x ?? 0, after?.y ?? 0, after?.scale ?? 0],
+                        "canUndo": store.undoManager?.canUndo ?? false,
+                    ]
+                }
+            }
+
+            // OVERLAP_SNAPSHOT_TAB=master or titles opens the Audio or Text tab with nothing selected, showing the
+            // master volume or the title styles.
+            if let empty = ["master": PanelTab.audio, "titles": .text][environment["OVERLAP_SNAPSHOT_TAB"] ?? ""], let store = document?.store {
                 store.select([])
-                store.activeTab = .audio
+                store.activeTab = empty
                 try? await Task.sleep(for: .milliseconds(300))
             }
             // OVERLAP_SNAPSHOT_TAB=video or audio selects the top track's first clip and opens that tab.
@@ -276,6 +321,7 @@ enum DebugSnapshot {
                     "menu": menuLines,
                     "moveDisplay": moveDisplay,
                     "speedPreview": speedReport,
+                    "handle": handleReport,
                     "windowTitle": store.windowTitle,
                     "titleEdit": titleEdit,
                     "fileURL": document?.fileURL?.path ?? "",

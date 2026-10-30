@@ -1,4 +1,5 @@
 import AVFoundation
+import ImageIO
 
 /// Peak levels for drawing an asset's waveform.
 struct Waveform: Sendable {
@@ -70,6 +71,18 @@ enum MediaAnalysis {
             }
         }
         await update(strip)
+    }
+
+    /// A small upright copy of an image file.
+    @concurrent
+    static func imageThumbnail(for url: URL) async -> CGImage? {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: 320,
+        ]
+        return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
     }
 
     @concurrent

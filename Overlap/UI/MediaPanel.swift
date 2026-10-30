@@ -150,7 +150,7 @@ private struct AssetRow: View {
         } else {
             ZStack {
                 RoundedRectangle(cornerRadius: 5).fill(.quaternary)
-                (asset.kind == .video ? AppIcon.video : AppIcon.waveform).image
+                (asset.kind == .video ? AppIcon.video : asset.kind == .image ? AppIcon.image : AppIcon.waveform).image
                     .foregroundStyle(.secondary)
             }
         }
@@ -165,6 +165,10 @@ private struct AssetRow: View {
         case .audio:
             if let rate = asset.sampleRate { parts.append("\((rate / 1000).formatted(.number.precision(.fractionLength(0...1)))) kHz") }
             if let channels = asset.channelCount { parts.append(channels == 1 ? "Mono" : channels == 2 ? "Stereo" : "\(channels) ch") }
+        case .image:
+            if let width = asset.pixelWidth, let height = asset.pixelHeight { parts.append("\(width)×\(height)") }
+            parts.append("Image")
+            return parts.joined(separator: " · ")
         }
         parts.append(asset.duration.shortDuration)
         return parts.joined(separator: " · ")

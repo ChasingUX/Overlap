@@ -51,8 +51,18 @@ final class PlaybackController {
         }
     }
 
+    /// What the current composition's compositor draws, for showing look changes without a rebuild.
+    @ObservationIgnored private(set) var plan: RenderPlanBox?
+
+    /// Draws the frame at the playhead again after the plan changes. While playing, the next frame shows it anyway.
+    func redrawPicture() {
+        guard !isPlaying, player.currentItem != nil else { return }
+        player.seek(to: currentTime.cmTime, toleranceBefore: .zero, toleranceAfter: .zero)
+    }
+
     /// Swaps in a rebuilt composition, keeping the playhead and play state.
     func install(_ built: BuiltComposition) {
+        plan = built.plan
         let item = AVPlayerItem(asset: built.composition)
         item.videoComposition = built.videoComposition
         item.audioMix = built.audioMix

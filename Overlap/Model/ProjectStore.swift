@@ -189,11 +189,109 @@ final class ProjectStore {
         }
     }
 
+    // MARK: Picture
+
+    /// Shows a change to the project's look at once, without an undo step or a rebuild, as while a slider is
+    /// dragged. The change is made for real, as one undo step, by an `apply` when the drag ends.
+    func previewLook(_ change: (inout Project) -> Void) {
+        var preview = project
+        change(&preview)
+        playback.plan?.update { $0.takeLook(from: preview) { self.resolve($0) } }
+        playback.redrawPicture()
+    }
+
+    func resolve(_ fill: BackgroundFill) -> ResolvedFill? {
+        switch fill {
+        case let .color(color): .color(color)
+        case let .gradient(gradient): .gradient(gradient)
+        case let .wallpaper(id): project.asset(id).map { .image(mediaURL(for: $0)) }
+        }
+    }
+
+    /// The preview's handles crop the selected picture instead of moving and scaling it.
+    var isCropping = false
+
+    /// Changes the selected text clips' text or look, as one undo step.
+    func setTitle(_ name: String, _ change: @escaping (inout Title) -> Void) {
+        let ids = editableSelection.filter { project.clip($0)?.title != nil }
+        guard !ids.isEmpty else { return }
+        apply(name) { $0.changeTitle(of: ids, change) }
+    }
+
+    /// Shows a text change on the selected text clips while it's being made.
+    func previewTitle(_ change: @escaping (inout Title) -> Void) {
+        let ids = editableSelection.filter { project.clip($0)?.title != nil }
+        previewLook { $0.changeTitle(of: ids, change) }
+    }
+
+    /// Adds a title in that style at the playhead, on a new track above the others.
+    func addTitleAtPlayhead(_ style: TitleStyle) {
+        addTitle(style, at: playback.currentTime, target: .new(at: project.tracks.count))
+    }
+
+    /// Opens the tab that edits the selection: Text for text, else Video, else Audio.
+    func showMainTab() {
+        guard let tab = mainTab else { return }
+        activeTab = tab
+        isPanelVisible = true
+    }
+
+    func setCrossfadeVideoStyle(_ style: VideoTransition) {
+        guard let incoming = selectedTransition else { return }
+        apply("Change Crossfade Style") { project in
+            guard let location = project.location(ofClip: incoming) else { return }
+            project.tracks[location.track].clips[location.clip].crossfadeVideoStyle = style
+        }
+    }
+
+    /// Gives the selected background clips a new fill.
+    func setClipFill(_ fill: BackgroundFill) {
+        let ids = editableSelection.filter { project.clip($0)?.fill != nil }
+        guard !ids.isEmpty else { return }
+        apply("Change Background") { project in
+            for id in ids {
+                guard let location = project.location(ofClip: id) else { continue }
+                project.tracks[location.track].clips[location.clip].fill = fill
+            }
+        }
+    }
+
+    /// Selected clips with a picture, which the Video tab changes.
+    private var pictureSelection: Set<UUID> {
+        editableSelection.filter { project.clip($0).map(project.showsPicture) ?? false }
+    }
+
+    /// Changes the selected clips' placement or look, as one undo step.
+    func setVisual(_ name: String, _ change: @escaping (inout Visual) -> Void) {
+        let ids = pictureSelection
+        guard !ids.isEmpty else { return }
+        apply(name) { $0.changeVisual(of: ids, change) }
+    }
+
+    /// Shows a placement or look change on the selected clips while it's dragged.
+    func previewVisual(_ change: @escaping (inout Visual) -> Void) {
+        let ids = pictureSelection
+        previewLook { $0.changeVisual(of: ids, change) }
+    }
+
     func addClip(asset id: UUID, at start: Time, target: TrackTarget) {
         apply("Add Clip") { project in
             if let clip = project.addClip(asset: id, at: start, target: target) {
                 selection = [clip.id]
             }
+        }
+    }
+
+    func addTitle(_ style: TitleStyle, at start: Time, target: TrackTarget) {
+        apply("Add Text") { project in
+            selection = [project.addTitle(style.title, visual: style.visual, at: start, target: target).id]
+        }
+        activeTab = .text
+    }
+
+    func addBackground(_ fill: BackgroundFill, at start: Time, target: TrackTarget) {
+        apply("Add Background") { project in
+            selection = [project.addBackground(fill, at: start, target: target).id]
         }
     }
 
@@ -515,6 +613,7 @@ final class ProjectStore {
             guard let clip = project.clip(id) else { return nil }
             var tabs: Set<PanelTab> = []
             if project.showsPicture(clip) { tabs.insert(.video) }
+            if clip.title != nil { tabs.insert(.text) }
             if project.playsSound(clip) { tabs.insert(.audio) }
             return tabs
         }
@@ -524,6 +623,7 @@ final class ProjectStore {
 
     private var mainTab: PanelTab? {
         let tabs = applicableTabs
+        if tabs.contains(.text) { return .text }
         if tabs.contains(.video) { return .video }
         if tabs.contains(.audio) { return .audio }
         return nil
@@ -541,7 +641,8 @@ final class ProjectStore {
     }
 
     /// Copies files into the project and adds them to the library, and to the timeline when `placement` is given.
-    func importFiles(_ urls: [URL], placement: (start: Time, target: TrackTarget)? = nil) {
+    /// `imported` hears about each asset as it arrives.
+    func importFiles(_ urls: [URL], placement: (start: Time, target: TrackTarget)? = nil, imported: ((Asset) -> Void)? = nil) {
         Task {
             var nextStart = placement?.start
             // Several files dropped together line up one after another on the same track.
@@ -570,8 +671,9 @@ final class ProjectStore {
                             nextTarget = .existing(project.tracks[location.track].id)
                         }
                     }
-                    nextStart = nextStart.map { $0 + asset.duration }
+                    nextStart = nextStart.map { $0 + (asset.kind == .image ? Clip.stillDuration : asset.duration) }
                     analyze(asset)
+                    imported?(asset)
                 } catch {
                     failures.append(error.localizedDescription)
                 }
@@ -584,6 +686,75 @@ final class ProjectStore {
         }
     }
 
+    // MARK: Canvas
+
+    func setCanvasAspect(_ aspect: CanvasAspect) {
+        apply("Change Canvas Shape") { project in
+            project.canvasAspect = aspect
+            let rate = project.canvas?.frameRate ?? Project.defaultCanvas.frameRate
+            if let size = aspect.size {
+                project.canvas = Canvas(width: size.width, height: size.height, frameRate: rate)
+            } else if aspect == .auto {
+                project.canvas = project.firstVideoCanvas ?? Canvas(width: 1920, height: 1080, frameRate: rate)
+            } else if project.canvas == nil {
+                project.canvas = Project.defaultCanvas
+            }
+        }
+    }
+
+    /// A custom canvas size, kept even and between 16 and 8192 pixels so video encoders accept it.
+    func setCanvasSize(width: Int, height: Int) {
+        func even(_ value: Int) -> Int { min(max(value, 16), 8192) / 2 * 2 }
+        apply("Change Canvas Size") { project in
+            project.canvasAspect = .custom
+            project.canvas = Canvas(width: even(width), height: even(height),
+                                    frameRate: project.canvas?.frameRate ?? Project.defaultCanvas.frameRate)
+        }
+    }
+
+    func setFrameRate(_ rate: Double) {
+        apply("Change Frame Rate") { project in
+            var canvas = project.canvas ?? Project.defaultCanvas
+            canvas.frameRate = rate
+            project.canvas = canvas
+        }
+    }
+
+    func setBackground(_ fill: BackgroundFill?) {
+        apply("Change Background") { $0.background = fill }
+    }
+
+    func setFrame(_ name: String, _ change: (inout PictureFrame) -> Void) {
+        apply(name) { change(&$0.frame) }
+    }
+
+    /// Picks image files to use as wallpapers: each is kept in the wallpaper library for every project, and the
+    /// last one becomes this project's background.
+    func presentWallpaperPanel() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.image]
+        panel.allowsMultipleSelection = true
+        panel.prompt = "Add Wallpaper"
+        guard panel.runModal() == .OK else { return }
+        for url in panel.urls {
+            WallpaperLibrary.add(url)
+        }
+        if let last = panel.urls.last {
+            useWallpaper(last)
+        }
+    }
+
+    /// Makes a wallpaper this project's background, copying it into the project unless it's already there.
+    func useWallpaper(_ url: URL) {
+        if let existing = project.assets.first(where: { $0.kind == .image && $0.displayName == url.lastPathComponent }) {
+            setBackground(.wallpaper(existing.id))
+            return
+        }
+        importFiles([url]) { [weak self] asset in
+            self?.setBackground(.wallpaper(asset.id))
+        }
+    }
+
     // MARK: Media analysis
 
     func analyze(_ asset: Asset) {
@@ -592,6 +763,8 @@ final class ProjectStore {
         let url = mediaURL(for: asset)
         Task {
             if asset.kind == .video, let image = await MediaAnalysis.thumbnail(for: url) {
+                thumbnails[asset.id] = image
+            } else if asset.kind == .image, let image = await MediaAnalysis.imageThumbnail(for: url) {
                 thumbnails[asset.id] = image
             }
             if asset.hasAudio, let waveform = await MediaAnalysis.waveform(for: url) {

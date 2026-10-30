@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// The panel's controls. Each sits in its own rounded box, with its label on the left.
@@ -114,6 +115,99 @@ struct OptionRow<Value: Equatable>: View {
         .padding(PanelMetrics.pillInset)
         .frame(height: PanelMetrics.boxHeight)
         .background(ControlBox())
+    }
+}
+
+/// More choices than fit in a row, in a grid of plain words in one box; the chosen one sits on a raised pill.
+struct OptionGrid<Value: Equatable>: View {
+    let options: [(label: String, value: Value)]
+    let selected: Value?
+    var columns = 3
+    let onSelect: (Value) -> Void
+
+    var body: some View {
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 2), count: columns), spacing: 2) {
+            ForEach(options.indices, id: \.self) { index in
+                let option = options[index]
+                Button(option.label) { onSelect(option.value) }
+                    .buttonStyle(OptionButtonStyle(isSelected: option.value == selected, fillsWidth: true))
+            }
+        }
+        .font(.system(size: 12))
+        .padding(PanelMetrics.pillInset)
+        .background(ControlBox())
+    }
+}
+
+/// A label and a pop-up menu showing its current choice on a pill.
+struct MenuRow<Items: View>: View {
+    let title: String
+    let value: String
+    @ViewBuilder var items: Items
+
+    var body: some View {
+        ControlRow(title: title) {
+            Menu {
+                items
+            } label: {
+                HStack(spacing: 6) {
+                    Text(value)
+                        .lineLimit(1)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 10)
+                .frame(height: PanelMetrics.boxHeight - PanelMetrics.pillInset * 2)
+                .background(ChosenPill())
+                .contentShape(Rectangle())
+            }
+            .menuStyle(.button)
+            .buttonStyle(.plain)
+            .menuIndicator(.hidden)
+            .fixedSize()
+        }
+    }
+}
+
+/// A label and a color well. The color panel sends changes as it's dragged; they show at once through
+/// `onChange`, and `onCommit` follows once the color has settled, as one undo step.
+struct ColorRow: View {
+    let title: String
+    let color: RGBA
+    var onChange: ((RGBA) -> Void)?
+    let onCommit: (RGBA) -> Void
+
+    @State private var settle: Task<Void, Never>?
+
+    var body: some View {
+        ControlRow(title: title) {
+            ColorPicker(title, selection: Binding(get: { Color(rgba: color) }, set: { picked in
+                let rgba = RGBA(picked)
+                onChange?(rgba)
+                settle?.cancel()
+                settle = Task {
+                    try? await Task.sleep(for: .milliseconds(400))
+                    guard !Task.isCancelled else { return }
+                    onCommit(rgba)
+                }
+            }), supportsOpacity: false)
+            .labelsHidden()
+            .padding(.trailing, PanelMetrics.insidePadding - PanelMetrics.pillInset - 2)
+        }
+    }
+}
+
+extension Color {
+    init(rgba: RGBA) {
+        self.init(.sRGB, red: rgba.red, green: rgba.green, blue: rgba.blue, opacity: rgba.alpha)
+    }
+}
+
+extension RGBA {
+    init(_ color: Color) {
+        let srgb = NSColor(color).usingColorSpace(.sRGB) ?? .black
+        self.init(red: srgb.redComponent, green: srgb.greenComponent, blue: srgb.blueComponent, alpha: srgb.alphaComponent)
     }
 }
 

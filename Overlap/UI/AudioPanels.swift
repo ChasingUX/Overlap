@@ -59,19 +59,12 @@ struct CurvePresetGrid: View {
     static let defaultCustom = Curve.custom(x1: 0.42, y1: 0, x2: 0.58, y2: 1)
 
     var body: some View {
-        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 2), count: 3), spacing: 2) {
-            ForEach(Curve.presets, id: \.self) { curve in
-                Button(curve.name) { onSelect(curve) }
-                    .buttonStyle(OptionButtonStyle(isSelected: selected == curve, fillsWidth: true))
-            }
-            Button("Custom") {
-                if !selected.isCustom { onSelect(Self.defaultCustom) }
-            }
-            .buttonStyle(OptionButtonStyle(isSelected: selected.isCustom, fillsWidth: true))
+        // Every custom curve shows as Custom; choosing Custom again keeps the one already drawn.
+        OptionGrid(options: Curve.presets.map { ($0.name, $0) } + [("Custom", Self.defaultCustom)],
+                   selected: selected.isCustom ? Self.defaultCustom : selected) { curve in
+            if curve.isCustom, selected.isCustom { return }
+            onSelect(curve)
         }
-        .font(.system(size: 12))
-        .padding(PanelMetrics.pillInset)
-        .background(ControlBox())
     }
 }
 
@@ -221,11 +214,15 @@ struct TransitionPanel: View {
                     ValueRow(title: "Duration", value: String(format: "%.2f s", crossfade.range.duration.seconds))
                     CurvePresetGrid(selected: crossfade.curve) { store.setCrossfadeCurve($0) }
                     CurveEditor(curve: crossfade.curve) { store.setCrossfadeCurve($0) }
+                    if [crossfade.outgoing, crossfade.incoming].allSatisfy(store.project.showsPicture) {
+                        OptionRow(title: "Video", options: VideoTransition.allCases.map { ($0.name, $0) }, selected: crossfade.videoStyle) {
+                            store.setCrossfadeVideoStyle($0)
+                        }
+                    }
                     Button("Use as Default for New Crossfades") { store.useCrossfadeCurveAsDefault() }
                         .buttonStyle(BoxButtonStyle())
                         .disabled(store.project.defaultCrossfadeCurve == crossfade.curve)
                 }
-                ComingLater(text: "Video dissolves arrive in milestone 4. Until then, video cuts to the incoming clip.")
             }
         } else {
             PlaceholderPanel(icon: .transitions, title: "Select a crossfade",

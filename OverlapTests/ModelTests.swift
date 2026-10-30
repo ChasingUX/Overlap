@@ -243,3 +243,64 @@ struct TimelineDragTests {
         #expect(provider.registeredTypeIdentifiers == ["public.utf8-plain-text"])
     }
 }
+
+/// Images, text and background clips: their lengths, trims and what they need.
+struct StillClipTests {
+    let image = Asset(id: UUID(), fileName: "p.png", displayName: "Photo.png", kind: .image, duration: .zero,
+                      hasAudio: false, pixelWidth: 4000, pixelHeight: 3000)
+
+    @Test func imagesStartAtFiveSecondsAndTrimToAnyLength() throws {
+        var project = Project()
+        project.assets = [image]
+        let added = project.addClip(asset: image.id, at: Time(seconds: 2), preferredTrack: 0)
+        let clip = try #require(added)
+        #expect(clip.duration == Clip.stillDuration)
+        // An image has no source to stay inside: it stretches both ways.
+        project.trim(clip.id, edge: .end, to: Time(seconds: 60))
+        project.trim(clip.id, edge: .start, to: .zero)
+        #expect(project.clip(clip.id)?.range == TimeRange(start: .zero, duration: Time(seconds: 60)))
+        #expect(project.canvas == Project.defaultCanvas)
+    }
+
+    @Test func textAndBackgroundClipsShowPictures() {
+        var project = Project()
+        let title = project.addTitle(TitleStyle.lowerThird.title, visual: TitleStyle.lowerThird.visual, at: .zero, target: .existing(project.tracks[0].id))
+        let background = project.addBackground(BackgroundFill.gradients[0], at: .zero, target: .existing(project.tracks[1].id))
+        #expect(project.showsPicture(title) && project.showsPicture(background))
+        #expect(!project.playsSound(title) && !project.playsSound(background))
+        #expect(project.isPlaceable(title) && !project.isPlaceable(background))
+        #expect(project.hasVisualClips)
+        #expect(title.visual.x == -0.28)
+    }
+
+    @Test func removingAWallpaperClearsTheBackground() {
+        var project = Project()
+        project.assets = [image]
+        project.background = .wallpaper(image.id)
+        project.addBackground(.wallpaper(image.id), at: .zero, target: .existing(project.tracks[0].id))
+        project.removeAsset(image.id)
+        #expect(project.background == nil)
+        #expect(project.tracks.allSatisfy { $0.clips.isEmpty })
+    }
+
+    @Test func projectsFromMilestoneThreeStillOpen() throws {
+        var project = Project()
+        project.addTitle(Title(text: "Hi"), at: .zero, target: .existing(project.tracks[0].id))
+        let plain = Clip(assetID: UUID(), start: .zero, sourceStart: .zero, duration: Time(seconds: 3))
+        project.tracks[1].clips = [plain]
+        var json = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(project)) as? [String: Any])
+        for key in ["canvasAspect", "background", "frame"] { json.removeValue(forKey: key) }
+        // A clip saved before pictures could be placed.
+        var tracks = try #require(json["tracks"] as? [[String: Any]])
+        var clips = try #require(tracks[1]["clips"] as? [[String: Any]])
+        for key in ["visual", "title", "fill", "crossfadeVideoStyle"] { clips[0].removeValue(forKey: key) }
+        tracks[1]["clips"] = clips
+        json["tracks"] = tracks
+        let decoded = try JSONDecoder().decode(Project.self, from: JSONSerialization.data(withJSONObject: json))
+        #expect(decoded.canvasAspect == .auto)
+        #expect(decoded.background == nil)
+        #expect(decoded.frame.isOff)
+        #expect(decoded.tracks[1].clips[0] == plain)
+        #expect(decoded.tracks[0].clips[0].title?.text == "Hi")
+    }
+}

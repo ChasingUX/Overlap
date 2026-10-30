@@ -3,6 +3,8 @@ import Foundation
 enum AssetKind: String, Codable, Sendable {
     case video
     case audio
+    /// A still image. It has no length of its own; its clips start at five seconds and trim to any length.
+    case image
 }
 
 /// An imported media file. Its copy lives in the package's `Media/` folder under `fileName`.
@@ -42,8 +44,20 @@ struct Clip: Identifiable, Hashable, Sendable, Codable {
     /// A video's picture and sound can be split into two clips, each keeping one part.
     var usesVideo = true
     var usesAudio = true
+    /// Where the picture sits in the canvas, and how it looks.
+    var visual = Visual()
+    /// A text clip's text and look. Text clips have no asset.
+    var title: Title?
+    /// What a background clip shows. Background clips have no asset and always draw behind the picture.
+    var fill: BackgroundFill?
+    /// How the picture changes in a crossfade into this clip; nil dissolves.
+    var crossfadeVideoStyle: VideoTransition?
 
     static let speedRange = 0.25...4.0
+    /// The asset ID of text and background clips, which show what they hold instead of a file.
+    static let noAsset = UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+    /// How long a new still, text or background clip lasts.
+    static let stillDuration = Time(seconds: 5)
 
     var end: Time { start + duration }
     var range: TimeRange { TimeRange(start: start, duration: duration) }
@@ -68,6 +82,10 @@ extension Clip {
         preservesPitch = try container.decodeIfPresent(Bool.self, forKey: .preservesPitch) ?? true
         usesVideo = try container.decodeIfPresent(Bool.self, forKey: .usesVideo) ?? true
         usesAudio = try container.decodeIfPresent(Bool.self, forKey: .usesAudio) ?? true
+        visual = try container.decodeIfPresent(Visual.self, forKey: .visual) ?? Visual()
+        title = try container.decodeIfPresent(Title.self, forKey: .title)
+        fill = try container.decodeIfPresent(BackgroundFill.self, forKey: .fill)
+        crossfadeVideoStyle = try container.decodeIfPresent(VideoTransition.self, forKey: .crossfadeVideoStyle)
     }
 }
 
@@ -98,6 +116,14 @@ struct Project: Equatable, Sendable, Codable {
     var masterVolume: Double = 1
     /// The curve new crossfades use until they're given their own.
     var defaultCrossfadeCurve: Curve = .equalPower
+    /// How the canvas size is chosen. Auto follows the first video added.
+    var canvasAspect = CanvasAspect.auto
+    /// What shows behind the picture; nil is none, and the canvas is black where nothing covers it.
+    var background: BackgroundFill?
+    var frame = PictureFrame()
+
+    /// The size and frame rate pictures are composed at, until a video sets one.
+    static let defaultCanvas = Canvas(width: 1920, height: 1080, frameRate: 30)
 
     var duration: Time {
         tracks.flatMap(\.clips).map(\.end).max() ?? .zero
@@ -114,9 +140,24 @@ struct Project: Equatable, Sendable, Codable {
         }
     }
 
-    /// Whether a clip draws in the preview: a video clip whose picture hasn't been split off.
+    /// Whether a clip draws in the preview: a video whose picture hasn't been split off, an image, text or a background.
     func showsPicture(_ clip: Clip) -> Bool {
-        asset(clip.assetID)?.kind == .video && clip.usesVideo
+        if clip.title != nil || clip.fill != nil { return true }
+        switch asset(clip.assetID)?.kind {
+        case .video: return clip.usesVideo
+        case .image: return true
+        default: return false
+        }
+    }
+
+    /// Whether a clip has no length of its own to stay inside: an image, text or a background.
+    func isStill(_ clip: Clip) -> Bool {
+        clip.title != nil || clip.fill != nil || asset(clip.assetID)?.kind == .image
+    }
+
+    /// Whether a clip draws its own picture, so the Video tab can place it. Background clips fill the canvas instead.
+    func isPlaceable(_ clip: Clip) -> Bool {
+        showsPicture(clip) && clip.fill == nil
     }
 
     /// Whether a clip plays sound: any clip with audio, unless its sound was split off.
@@ -157,6 +198,9 @@ extension Project {
         tracks = try container.decode([Track].self, forKey: .tracks)
         masterVolume = try container.decodeIfPresent(Double.self, forKey: .masterVolume) ?? 1
         defaultCrossfadeCurve = try container.decodeIfPresent(Curve.self, forKey: .defaultCrossfadeCurve) ?? .equalPower
+        canvasAspect = try container.decodeIfPresent(CanvasAspect.self, forKey: .canvasAspect) ?? .auto
+        background = try container.decodeIfPresent(BackgroundFill.self, forKey: .background)
+        frame = try container.decodeIfPresent(PictureFrame.self, forKey: .frame) ?? PictureFrame()
     }
 }
 
@@ -165,6 +209,8 @@ struct Crossfade: Hashable, Sendable {
     var outgoing: Clip
     var incoming: Clip
     var curve: Curve
+
+    var videoStyle: VideoTransition { incoming.crossfadeVideoStyle ?? .dissolve }
 
     var range: TimeRange { TimeRange(start: incoming.start, duration: outgoing.end - incoming.start) }
 }
@@ -316,13 +362,50 @@ extension Project {
         place(clip, on: target)
     }
 
-    /// A clip for a whole asset. The first video added also sets the canvas.
+    /// A clip for a whole asset, or five seconds of an image. The first video added sets the canvas, unless
+    /// it's been given a fixed shape.
     private mutating func newClip(asset assetID: UUID, at start: Time) -> Clip? {
         guard let asset = asset(assetID) else { return nil }
-        if canvas == nil, asset.kind == .video, let width = asset.pixelWidth, let height = asset.pixelHeight {
+        if asset.kind == .video, canvasAspect == .auto, !hasVideoClips, let width = asset.pixelWidth, let height = asset.pixelHeight {
             canvas = Canvas(width: width, height: height, frameRate: asset.frameRate ?? 30)
+        } else if asset.kind == .image, canvas == nil {
+            canvas = Self.defaultCanvas
         }
-        return Clip(assetID: assetID, start: max(.zero, start), sourceStart: .zero, duration: asset.duration)
+        let duration = asset.kind == .image ? Clip.stillDuration : asset.duration
+        return Clip(assetID: assetID, start: max(.zero, start), sourceStart: .zero, duration: duration)
+    }
+
+    /// The size and frame rate of the first video imported that's on the timeline, which an Auto canvas follows.
+    var firstVideoCanvas: Canvas? {
+        let used = Set(tracks.flatMap(\.clips).map(\.assetID))
+        guard let video = assets.first(where: { $0.kind == .video && used.contains($0.id) }),
+              let width = video.pixelWidth, let height = video.pixelHeight else { return nil }
+        return Canvas(width: width, height: height, frameRate: video.frameRate ?? Self.defaultCanvas.frameRate)
+    }
+
+    private var hasVideoClips: Bool {
+        tracks.contains { $0.clips.contains { asset($0.assetID)?.kind == .video } }
+    }
+
+    /// Adds a text clip, five seconds long.
+    @discardableResult
+    mutating func addTitle(_ title: Title, visual: Visual = Visual(), at start: Time, target: TrackTarget) -> Clip {
+        if canvas == nil { canvas = Self.defaultCanvas }
+        var clip = Clip(assetID: Clip.noAsset, start: max(.zero, start), sourceStart: .zero, duration: Clip.stillDuration)
+        clip.title = title
+        clip.visual = visual
+        place(clip, on: target)
+        return clip
+    }
+
+    /// Adds a background clip, five seconds long.
+    @discardableResult
+    mutating func addBackground(_ fill: BackgroundFill, at start: Time, target: TrackTarget) -> Clip {
+        if canvas == nil { canvas = Self.defaultCanvas }
+        var clip = Clip(assetID: Clip.noAsset, start: max(.zero, start), sourceStart: .zero, duration: Clip.stillDuration)
+        clip.fill = fill
+        place(clip, on: target)
+        return clip
     }
 
     private mutating func insert(_ clip: Clip, onTrack index: Int) {
@@ -365,9 +448,12 @@ extension Project {
     /// Moves one edge of a clip to `time`, staying inside its source media. A normal trim stops at the
     /// neighboring clip; a ripple trim keeps the clip's start in place and moves the clips after it instead.
     mutating func trim(_ id: UUID, edge: ClipEdge, to time: Time, ripple: Bool = false) {
-        guard let location = location(ofClip: id), !tracks[location.track].isLocked,
-              let asset = asset(tracks[location.track].clips[location.clip].assetID) else { return }
+        guard let location = location(ofClip: id), !tracks[location.track].isLocked else { return }
         var clip = tracks[location.track].clips[location.clip]
+        // Stills have no source to stay inside; media clips stop at the ends of their file.
+        let still = isStill(clip)
+        guard still || asset(clip.assetID) != nil else { return }
+        let sourceLength = asset(clip.assetID)?.duration ?? .zero
         // Neighbors in time order: two before and two after.
         let sorted = tracks[location.track].clips.sorted { $0.start < $1.start }
         let index = sorted.firstIndex { $0.id == id } ?? 0
@@ -380,7 +466,7 @@ extension Project {
 
         switch edge {
         case .start:
-            var earliest = clip.start - Time(seconds: clip.sourceStart.seconds / clip.speed)
+            var earliest = still ? .zero : clip.start - Time(seconds: clip.sourceStart.seconds / clip.speed)
             var latest = clip.end - Self.minimumClipDuration
             if !ripple, let before {
                 if before.end > clip.start {
@@ -396,7 +482,7 @@ extension Project {
             }
             let newStart = min(max(time, earliest, .zero), latest)
             let delta = newStart - clip.start
-            clip.sourceStart = max(.zero, clip.sourceStart + Time(seconds: delta.seconds * clip.speed))
+            clip.sourceStart = still ? .zero : max(.zero, clip.sourceStart + Time(seconds: delta.seconds * clip.speed))
             clip.duration = clip.duration - delta
             if ripple {
                 shift = .zero - delta
@@ -405,7 +491,7 @@ extension Project {
                 shift = .zero
             }
         case .end:
-            var latest = clip.start + Time(seconds: (asset.duration - clip.sourceStart).seconds / clip.speed)
+            var latest = still ? Time(seconds: 24 * 3600) : clip.start + Time(seconds: (sourceLength - clip.sourceStart).seconds / clip.speed)
             var earliest = clip.start + Self.minimumClipDuration
             if !ripple, let after {
                 if after.start < clip.end {
@@ -538,7 +624,7 @@ extension Project {
     mutating func paste(_ items: [ClipboardItem], at time: Time) -> [UUID] {
         guard let earliest = items.map(\.clip.start).min() else { return [] }
         var pasted: [UUID] = []
-        for item in items where asset(item.clip.assetID) != nil {
+        for item in items where asset(item.clip.assetID) != nil || isStill(item.clip) {
             var clip = item.clip
             clip.id = UUID()
             clip.start = time + (clip.start - earliest)
@@ -555,8 +641,27 @@ extension Project {
         }
     }
 
+    mutating func changeTitle(of ids: Set<UUID>, _ change: (inout Title) -> Void) {
+        for id in ids {
+            guard let location = location(ofClip: id), !tracks[location.track].isLocked,
+                  var title = tracks[location.track].clips[location.clip].title else { continue }
+            change(&title)
+            tracks[location.track].clips[location.clip].title = title
+        }
+    }
+
+    mutating func changeVisual(of ids: Set<UUID>, _ change: (inout Visual) -> Void) {
+        for id in ids {
+            guard let location = location(ofClip: id), !tracks[location.track].isLocked else { continue }
+            change(&tracks[location.track].clips[location.clip].visual)
+        }
+    }
+
+    /// Removes an asset with its clips, and wherever it's a wallpaper.
     mutating func removeAsset(_ id: UUID) {
-        removeClips(Set(tracks.flatMap(\.clips).filter { $0.assetID == id }.map(\.id)))
+        let wallpaper = BackgroundFill.wallpaper(id)
+        removeClips(Set(tracks.flatMap(\.clips).filter { $0.assetID == id || $0.fill == wallpaper }.map(\.id)))
+        if background == wallpaper { background = nil }
         assets.removeAll { $0.id == id }
     }
 }

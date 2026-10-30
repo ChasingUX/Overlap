@@ -82,20 +82,9 @@ struct PanelView: View {
         case .media:
             MediaPanel(store: store)
         case .canvas:
-            PlaceholderPanel(icon: .canvas, title: "Canvas settings arrive in milestone 4",
-                             message: "Backgrounds, aspect ratio, padding, shadow and corners will live here.")
+            CanvasPanel(store: store)
         case .video:
-            if store.applicableTabs.contains(.video) {
-                ClipPanel(title: "Video") {
-                    PanelGroup(title: store.selectedClips.count > 1 ? "Clips" : "Clip") {
-                        SpeedSection(store: store)
-                    }
-                    ComingLater(text: "Position, scale, opacity and color arrive in milestone 4.")
-                }
-            } else {
-                PlaceholderPanel(icon: .video, title: "Select a video clip",
-                                 message: "Position, opacity and color settings for the selected clip show up here.")
-            }
+            VideoPanel(store: store)
         case .audio:
             if store.applicableTabs.contains(.audio) {
                 AudioClipPanel(store: store)
@@ -105,8 +94,7 @@ struct PanelView: View {
         case .transitions:
             TransitionPanel(store: store)
         case .text:
-            PlaceholderPanel(icon: .text, title: "Text clips arrive in milestone 4",
-                             message: "Title styles to drag onto the timeline, and text settings, will live here.")
+            TextPanel(store: store)
         }
     }
 }
@@ -134,6 +122,7 @@ struct PlaceholderPanel: View {
     let icon: AppIcon
     let title: String
     let message: String
+    var action: (title: String, perform: () -> Void)?
 
     var body: some View {
         VStack(spacing: 8) {
@@ -147,6 +136,11 @@ struct PlaceholderPanel: View {
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
+            if let action {
+                Button(action.title, action: action.perform)
+                    .buttonStyle(BoxButtonStyle())
+                    .padding(.top, 8)
+            }
         }
         .padding(24)
         .padding(.top, 48)
