@@ -1,0 +1,134 @@
+import AVFoundation
+import SwiftUI
+
+/// The composed canvas at the playhead: a rounded frame, inset from the edges, on a neutral gray surround so
+/// footage colors read accurately.
+struct PreviewView: NSViewRepresentable {
+    let playback: PlaybackController
+    /// The canvas's width over its height. The frame keeps this shape; 16:9 until there's a canvas.
+    let aspectRatio: CGFloat?
+
+    func makeNSView(context: Context) -> PlayerLayerView {
+        let view = PlayerLayerView(player: playback.player)
+        playback.onSwap = { [weak view] isSwapping in
+            if isSwapping { view?.swapDidBegin() } else { view?.swapDidEnd() }
+        }
+        return view
+    }
+
+    func updateNSView(_ view: PlayerLayerView, context: Context) {
+        view.playerLayer.player = playback.player
+        view.aspectRatio = aspectRatio
+    }
+}
+
+final class PlayerLayerView: NSView {
+    static let padding: CGFloat = 44
+    static let cornerRadius: CGFloat = 10
+
+    let playerLayer = AVPlayerLayer()
+    var aspectRatio: CGFloat? {
+        didSet { if aspectRatio != oldValue { needsLayout = true } }
+    }
+
+    /// Every edit swaps in a rebuilt composition, and the player shows nothing until the new one's first frame
+    /// is decoded. The frame on screen before the swap stays up, over the video, until then.
+    private let stillLayer = CALayer()
+    private var still: CVPixelBuffer?
+    private var isSwapping = false
+    private var readyObservation: NSKeyValueObservation?
+
+    init(player: AVPlayer) {
+        super.init(frame: .zero)
+        wantsLayer = true
+        playerLayer.player = player
+        playerLayer.videoGravity = .resizeAspect
+        playerLayer.backgroundColor = NSColor.black.cgColor
+        playerLayer.cornerRadius = Self.cornerRadius
+        playerLayer.cornerCurve = .continuous
+        playerLayer.masksToBounds = true
+        layer?.addSublayer(playerLayer)
+        stillLayer.contentsGravity = .resizeAspect
+        stillLayer.isHidden = true
+        playerLayer.addSublayer(stillLayer)
+        readyObservation = playerLayer.observe(\.isReadyForDisplay) { [weak self] _, _ in
+            Task { @MainActor in self?.removeStillWhenReady() }
+        }
+        updateSurround()
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is not supported")
+    }
+
+    func swapDidBegin() {
+        isSwapping = true
+        // During back-to-back swaps the first frame stays up; the player may have nothing to show by now.
+        guard still == nil, let frame = playerLayer.displayedPixelBuffer(),
+              let surface = CVPixelBufferGetIOSurface(frame)?.takeUnretainedValue() else { return }
+        // Holding the buffer keeps its surface from being reused for later frames while it's on screen.
+        still = frame
+        withoutAnimation {
+            stillLayer.contents = surface
+            stillLayer.isHidden = false
+        }
+    }
+
+    func swapDidEnd() {
+        isSwapping = false
+        removeStillWhenReady()
+    }
+
+    private func removeStillWhenReady() {
+        guard still != nil, !isSwapping, playerLayer.isReadyForDisplay else { return }
+        // A moment more, so the new frame is on screen before the still comes away.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+            guard let self, !self.isSwapping, self.playerLayer.isReadyForDisplay else { return }
+            self.withoutAnimation {
+                self.stillLayer.isHidden = true
+                self.stillLayer.contents = nil
+            }
+            self.still = nil
+        }
+    }
+
+    private func withoutAnimation(_ changes: () -> Void) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        changes()
+        CATransaction.commit()
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateSurround()
+    }
+
+    private func updateSurround() {
+        layer?.backgroundColor = Theme.previewSurround.cgColor(for: effectiveAppearance)
+    }
+
+    /// The frame is the largest canvas-shaped rectangle that fits inside the padding, centered.
+    override func layout() {
+        super.layout()
+        let area = bounds.insetBy(dx: Self.padding, dy: Self.padding)
+        let ratio = aspectRatio ?? 16 / 9
+        var size = CGSize(width: max(0, area.width), height: max(0, area.width) / ratio)
+        if size.height > area.height {
+            size = CGSize(width: max(0, area.height) * ratio, height: max(0, area.height))
+        }
+        // Follow resizes exactly instead of animating behind them.
+        withoutAnimation {
+            playerLayer.frame = CGRect(x: bounds.midX - size.width / 2, y: bounds.midY - size.height / 2, width: size.width, height: size.height)
+            stillLayer.frame = playerLayer.bounds
+        }
+    }
+
+    #if DEBUG
+    /// Whether the player has a frame to show, and whether the still covers it.
+    var debugDisplayState: (ready: Bool, stillShown: Bool) {
+        (playerLayer.isReadyForDisplay, !stillLayer.isHidden)
+    }
+    #endif
+}
