@@ -37,6 +37,8 @@ struct TransportBar: View {
                 }
                 transportButton(.goToEnd, label: "Go to end") { store.playback.seek(to: store.project.duration) }
             }
+            // With nothing on the timeline there's nothing to play.
+            .disabled(store.project.duration == .zero)
         }
         .padding(.horizontal, 20)
         .padding(.leading, leadingInset)
@@ -83,8 +85,17 @@ struct TransportBar: View {
 /// Play, pause and skip: while pressed, a gray rounded tile appears behind the icon and the button eases back a little.
 private struct TransportButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
+        TransportButton(configuration: configuration)
+    }
+}
+
+private struct TransportButton: View {
+    let configuration: ButtonStyleConfiguration
+    @Environment(\.isEnabled) private var isEnabled
+
+    var body: some View {
         configuration.label
-            .foregroundStyle(.primary)
+            .foregroundStyle(isEnabled ? .primary : .tertiary)
             .frame(width: 32, height: 32)
             .background(
                 RoundedRectangle(cornerRadius: 8)

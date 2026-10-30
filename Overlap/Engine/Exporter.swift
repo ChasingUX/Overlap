@@ -1,5 +1,6 @@
 @preconcurrency import AVFoundation
 import Accelerate
+import Synchronization
 import VideoToolbox
 
 /// Renders the whole timeline to one file through the same compositor and audio taps as playback, so the file
@@ -29,6 +30,8 @@ enum Exporter {
     }
 
     static let truePeakCeiling = -1.0
+    /// How long an export can go without a frame or a buffer of sound before it counts as stalled.
+    static let stallLimit = Duration.seconds(30)
 
     /// Builds what exporting the project takes, from the project as it is now.
     @MainActor
@@ -127,33 +130,57 @@ enum Exporter {
             }
             let limiter = limits ? TruePeakLimiter(sampleRate: sampleRate, channels: 2, ceiling: truePeakCeiling) : nil
             let gain = gain
-            let canceler = WriterCanceler(writer)
+            let canceler = ExportCanceler(writer: writer, readers: [videoReader, audioReader].compactMap { $0 })
+            let heartbeat = Heartbeat()
             // Picture and sound go in side by side, and the writer takes whichever it needs next. Encoders hold some
             // of what they're given back, so feeding the two in time order can leave each waiting on the other.
             try await withTaskCancellationHandler {
-                try await withThrowingTaskGroup { group in
+                // Each side reports `true` when it's done; the watchdog never does.
+                try await withThrowingTaskGroup(of: Bool.self) { group in
+                    var sides = 0
                     if let videoProvider, let videoReceiver {
+                        sides += 1
                         group.addTask {
                             while let video = try await videoProvider.next() {
                                 try Task.checkCancellation()
                                 try await videoReceiver.append(video)
+                                heartbeat.beat()
                                 report(video.presentationTimeStamp.seconds)
                             }
                             videoReceiver.finish()
+                            return true
                         }
                     }
                     if let audioProvider, let audioReceiver {
+                        sides += 1
                         group.addTask {
                             var sound = SoundStream(gain: gain, limiter: limiter, sampleRate: sampleRate, format: format)
                             while let audio = try await sound.next(from: audioProvider) {
                                 try Task.checkCancellation()
                                 try await audioReceiver.append(audio)
+                                heartbeat.beat()
                                 if !writesVideo { report(audio.presentationTimeStamp.seconds) }
                             }
                             audioReceiver.finish()
+                            return true
                         }
                     }
-                    try await group.waitForAll()
+                    // If nothing moves for a long while, the export has stalled: stopping the reading and writing
+                    // wakes whichever side is stuck, so the sheet never hangs.
+                    group.addTask {
+                        while !Task.isCancelled {
+                            try await Task.sleep(for: .seconds(1))
+                            if heartbeat.isQuiet(for: stallLimit) {
+                                canceler.cancel()
+                                throw ExportError.stalled
+                            }
+                        }
+                        return false
+                    }
+                    while sides > 0, let sideFinished = try await group.next() {
+                        if sideFinished { sides -= 1 }
+                    }
+                    group.cancelAll()
                 }
             } onCancel: {
                 canceler.cancel()
@@ -325,17 +352,33 @@ enum Exporter {
     }
 }
 
-/// Stops a writer from the cancellation handler, which runs alongside the export. That wakes whichever side is
-/// waiting for the writer to take more. The writer's cancel is safe to call from any thread.
-private final class WriterCanceler: @unchecked Sendable {
+/// Stops an export's readers and writer from outside the export, as when it's canceled or stalls. That wakes
+/// whichever side is waiting to read or to write. Their cancels are safe to call from any thread.
+private final class ExportCanceler: @unchecked Sendable {
     private let writer: AVAssetWriter
+    private let readers: [AVAssetReader]
 
-    init(_ writer: AVAssetWriter) {
+    init(writer: AVAssetWriter, readers: [AVAssetReader]) {
         self.writer = writer
+        self.readers = readers
     }
 
     func cancel() {
+        readers.forEach { $0.cancelReading() }
         writer.cancelWriting()
+    }
+}
+
+/// When the export last got a frame or a buffer of sound through.
+private final class Heartbeat: Sendable {
+    private let last = Mutex(ContinuousClock.now)
+
+    func beat() {
+        last.withLock { $0 = .now }
+    }
+
+    func isQuiet(for limit: Duration) -> Bool {
+        last.withLock { ContinuousClock.now - $0 > limit }
     }
 }
 
@@ -343,12 +386,14 @@ enum ExportError: LocalizedError, Equatable {
     case nothingToExport
     case cannotSave(in: String)
     case writeFailed
+    case stalled
 
     var errorDescription: String? {
         switch self {
         case .nothingToExport: "There's nothing on the timeline to export."
         case let .cannotSave(folder): "Overlap can't save to “\(folder)”. Choose another folder."
         case .writeFailed: "The file couldn't be written."
+        case .stalled: "The export stopped making progress. Try exporting again."
         }
     }
 }

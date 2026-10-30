@@ -39,6 +39,8 @@ final class PlayerLayerView: NSView {
     /// Every edit swaps in a rebuilt composition, and the player shows nothing until the new one's first frame
     /// is decoded. The frame on screen before the swap stays up, over the video, until then.
     private let stillLayer = CALayer()
+    /// The canvas's faint edge, over the picture and under the handles.
+    private let outlineLayer = CALayer()
     private var still: CVPixelBuffer?
     private var isSwapping = false
     private var readyObservation: NSKeyValueObservation?
@@ -57,6 +59,10 @@ final class PlayerLayerView: NSView {
         stillLayer.contentsGravity = .resizeAspect
         stillLayer.isHidden = true
         playerLayer.addSublayer(stillLayer)
+        outlineLayer.borderColor = Theme.canvasOutline.cgColor
+        outlineLayer.cornerRadius = Self.cornerRadius
+        outlineLayer.cornerCurve = .continuous
+        layer?.insertSublayer(outlineLayer, above: playerLayer)
         addSubview(overlay)
         readyObservation = playerLayer.observe(\.isReadyForDisplay) { [weak self] _, _ in
             Task { @MainActor in self?.removeStillWhenReady() }
@@ -89,8 +95,8 @@ final class PlayerLayerView: NSView {
 
     private func removeStillWhenReady() {
         guard still != nil, !isSwapping, playerLayer.isReadyForDisplay else { return }
-        // A moment more, so the new frame is on screen before the still comes away.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+        // A display refresh more, so the new frame is on screen before the still comes away.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { [weak self] in
             guard let self, !self.isSwapping, self.playerLayer.isReadyForDisplay else { return }
             self.withoutAnimation {
                 self.stillLayer.isHidden = true
@@ -132,10 +138,18 @@ final class PlayerLayerView: NSView {
         withoutAnimation {
             playerLayer.frame = CGRect(x: bounds.midX - size.width / 2, y: bounds.midY - size.height / 2, width: size.width, height: size.height)
             stillLayer.frame = playerLayer.bounds
+            outlineLayer.frame = playerLayer.frame
+            // One pixel on any screen.
+            outlineLayer.borderWidth = 1 / (window?.backingScaleFactor ?? 2)
         }
         // The handles cover the whole preview, so clicks around the canvas reach them too.
         overlay.frame = bounds
         overlay.canvasRect = overlay.convert(playerLayer.frame, from: self)
+    }
+
+    override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        needsLayout = true
     }
 
     #if DEBUG

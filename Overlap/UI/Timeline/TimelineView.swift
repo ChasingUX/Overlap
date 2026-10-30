@@ -569,10 +569,10 @@ final class TimelineView: NSView {
     }
 
     private func drawEmptyHint() {
-        let hint = "Drag video or audio here" as NSString
+        let hint = "Drag media, titles or backgrounds here" as NSString
         let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 12),
-            .foregroundColor: NSColor.tertiaryLabelColor,
+            .font: NSFont.systemFont(ofSize: 13),
+            .foregroundColor: NSColor.secondaryLabelColor,
         ]
         let size = hint.size(withAttributes: attributes)
         let area = CGRect(x: snapshot.coveredWidth, y: Layout.rulerHeight,

@@ -295,6 +295,7 @@ struct BoxSlider: View {
     @State private var draft: Double?
     @State private var dragStart: Double?
     @State private var valueWidth: CGFloat = 0
+    @State private var titleWidth: CGFloat = 0
     /// The detent the value is resting on during a drag, so the tap plays once, as it catches.
     @State private var caught: Double?
 
@@ -323,6 +324,9 @@ struct BoxSlider: View {
             let track = max(1, width - 2 - minimum)
             let fill = minimum + CGFloat((shown - range.lowerBound) / span) * track
             let valueStart = width - PanelMetrics.insidePadding - valueWidth - 8
+            let titleEnd = PanelMetrics.insidePadding + titleWidth + 4
+            // The handle fades out under the label and the value, rather than cross either.
+            let showsHandle = fill - 8 > titleEnd && fill - 8 < valueStart
             ZStack(alignment: .leading) {
                 ControlBox()
                 ForEach(1...Self.tickCount, id: \.self) { index in
@@ -350,12 +354,13 @@ struct BoxSlider: View {
                     .fill(Color(nsColor: Theme.controlHandle))
                     .frame(width: 3, height: 16)
                     .offset(x: fill - 8)
-                    .opacity(fill - 8 < valueStart ? 1 : 0)
-                    .animation(.easeOut(duration: 0.12), value: fill - 8 < valueStart)
+                    .opacity(showsHandle ? 1 : 0)
+                    .animation(.easeOut(duration: 0.12), value: showsHandle)
                 HStack {
                     Text(title)
                         .foregroundStyle(.secondary)
                         .fixedSize()
+                        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { titleWidth = $0 }
                     Spacer(minLength: 8)
                     Text(format(shown))
                         .monospacedDigit()

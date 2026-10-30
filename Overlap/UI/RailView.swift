@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// The icon rail: project tabs, a divider, then clip tabs. A dot marks tabs that apply to the selection.
+/// The icon rail: Canvas, the clip tabs, then Media, evenly spaced. A dot marks tabs that apply to the selection.
 struct RailView: View {
     static let width: CGFloat = 52
     let store: ProjectStore
@@ -8,16 +8,10 @@ struct RailView: View {
 
     var body: some View {
         VStack(spacing: 8) {
-            ForEach(PanelTab.allCases.filter(\.isProjectTab)) { tab in
+            ForEach(PanelTab.allCases.filter { $0 != .transitions }) { tab in
                 button(for: tab)
             }
-            Hairline()
-                .frame(width: 22)
-                .padding(.vertical, 4)
-            ForEach(PanelTab.allCases.filter { !$0.isProjectTab && $0 != .transitions }) { tab in
-                button(for: tab)
-            }
-            // Transitions joins the bottom of the clip group only while a crossfade is selected, so nothing above it moves.
+            // Transitions joins the bottom only while a crossfade is selected, so nothing above it moves.
             if store.selectedTransition != nil {
                 button(for: .transitions)
                     .transition(.opacity.combined(with: .scale(scale: 0.8)))

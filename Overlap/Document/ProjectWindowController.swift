@@ -209,6 +209,9 @@ private struct ExportButton: View {
             store.requestExport()
         }
         .buttonStyle(CapsuleButtonStyle())
+        // Nothing on the timeline, nothing to export.
+        .disabled(!store.canExport)
+        .help(store.canExport ? "Export the project to a file" : "Add media to the timeline to export it")
         .fixedSize()
         // The toolbar puts its last item close to the window edge; this gives it room to breathe.
         .padding(.trailing, 8)
@@ -218,12 +221,21 @@ private struct ExportButton: View {
 /// A solid accent-colored capsule, so it reads the same in the toolbar as in the reference design.
 private struct CapsuleButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(.system(size: 13, weight: .medium))
-            .foregroundStyle(.white)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 5)
-            .background(Capsule().fill(Color.accentColor.opacity(configuration.isPressed ? 0.8 : 1)))
-            .contentShape(Capsule())
+        CapsuleButton(configuration: configuration)
+    }
+
+    private struct CapsuleButton: View {
+        let configuration: Configuration
+        @Environment(\.isEnabled) private var isEnabled
+
+        var body: some View {
+            configuration.label
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(.white.opacity(isEnabled ? 1 : 0.5))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(Capsule().fill(isEnabled ? Color.accentColor.opacity(configuration.isPressed ? 0.8 : 1) : Color.primary.opacity(0.12)))
+                .contentShape(Capsule())
+        }
     }
 }

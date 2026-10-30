@@ -13,6 +13,10 @@ final class VoiceIsolation {
     /// Where the next block should start; a jump means a seek, and the unit forgets what it heard before.
     private var expectedStart: Double?
 
+    /// How far ahead of an isolated clip its unit starts working: twice its delay of about 56 ms, the first half
+    /// to settle and the second to make up for the delay, with room to spare.
+    static let warmUp = 0.25
+
     /// How much of the isolated voice is used, in percent.
     static let strength: Float = 100
 

@@ -51,7 +51,8 @@ struct DecibelSlider: View {
 
 // MARK: - Curves
 
-/// The six curve presets and Custom, three to a line in one box; the chosen one sits on a raised pill.
+/// The six curve presets and Custom, two to a line in one box so every name fits; the chosen one sits on a
+/// raised pill.
 struct CurvePresetGrid: View {
     let selected: Curve
     let onSelect: (Curve) -> Void
@@ -61,7 +62,7 @@ struct CurvePresetGrid: View {
     var body: some View {
         // Every custom curve shows as Custom; choosing Custom again keeps the one already drawn.
         OptionGrid(options: Curve.presets.map { ($0.name, $0) } + [("Custom", Self.defaultCustom)],
-                   selected: selected.isCustom ? Self.defaultCustom : selected) { curve in
+                   selected: selected.isCustom ? Self.defaultCustom : selected, columns: 2) { curve in
             if curve.isCustom, selected.isCustom { return }
             onSelect(curve)
         }
@@ -108,17 +109,18 @@ struct CurveEditor: View {
         .onGeometryChange(for: CGSize.self) { $0.size } action: { size = $0 }
         .gesture(handleDrag)
         .accessibilityLabel("Curve")
+        .background(ControlBox())
+        // The two sides, named under the box, where they can't sit on the curves.
         .overlay(alignment: .bottomLeading) {
-            // The two sides, named in the box's corner.
             HStack(spacing: 10) {
                 legend("In", opacity: 0.9)
                 legend("Out", opacity: 0.35)
             }
-            .padding(.leading, inset + 4)
-            .padding(.bottom, inset + 2)
+            .padding(.leading, PanelMetrics.insidePadding)
+            .offset(y: 18)
             .allowsHitTesting(false)
         }
-        .background(ControlBox())
+        .padding(.bottom, 18)
     }
 
     private func legend(_ text: String, opacity: Double) -> some View {

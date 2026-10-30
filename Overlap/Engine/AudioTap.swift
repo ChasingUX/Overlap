@@ -68,6 +68,11 @@ struct GainProgram: Sendable {
         self.segments = segments.sorted { $0.start < $1.start }
     }
 
+    /// Whether any segment plays between two times.
+    func plays(from start: Double, to end: Double) -> Bool {
+        segments.contains { $0.start < end && $0.start + $0.duration > start }
+    }
+
     func gain(at seconds: Double) -> Double {
         // Binary search for the last segment starting at or before `seconds`.
         var low = 0
@@ -108,7 +113,13 @@ private final class TapContext: @unchecked Sendable {
     let isolatesVoice: Bool
     var sampleRate: Double = 48_000
     var isFloat32 = false
+    /// The tap's format and largest block, kept from `prepare` for making the isolation unit later.
+    var format = AudioStreamBasicDescription()
+    var maximumFrames = 0
+    /// Made the first time playback comes near the clip, not when the item is set up: an item can hold many
+    /// isolated clips, and making all their units at once holds up its first frame.
     var isolation: VoiceIsolation?
+    var isolationUnavailable = false
 
     init(program: GainProgram, master: MasterGain?, isolatesVoice: Bool) {
         self.program = program
@@ -144,12 +155,13 @@ enum AudioTap {
                 context.isFloat32 = description.mFormatID == kAudioFormatLinearPCM
                     && description.mFormatFlags & kAudioFormatFlagIsFloat != 0
                     && description.mBitsPerChannel == 32
-                if context.isolatesVoice {
-                    context.isolation = VoiceIsolation(format: description, maximumFrames: Int(maximumFrames))
-                }
+                context.format = description
+                context.maximumFrames = Int(maximumFrames)
             },
             unprepare: { tap in
-                TapContext.from(tap).isolation = nil
+                let context = TapContext.from(tap)
+                context.isolation = nil
+                context.isolationUnavailable = false
             },
             process: { tap, frameCount, _, bufferList, frameCountOut, flagsOut in
                 var timeRange = CMTimeRange.zero
@@ -161,7 +173,16 @@ enum AudioTap {
                 let frames = Int(frameCountOut.pointee)
                 let start = timeRange.start.seconds
                 let sampleRate = context.sampleRate
-                context.isolation?.process(bufferList, frames: frames, start: start * sampleRate)
+                // Isolation only runs near the clip, where it's heard: it starts early enough to warm up and make
+                // up for its delay. Everywhere else the volume is zero anyway, and the work would be wasted.
+                if context.isolatesVoice, !context.isolationUnavailable,
+                   context.program.plays(from: start, to: start + Double(frames) / sampleRate + VoiceIsolation.warmUp) {
+                    if context.isolation == nil {
+                        context.isolation = VoiceIsolation(format: context.format, maximumFrames: context.maximumFrames)
+                        context.isolationUnavailable = context.isolation == nil
+                    }
+                    context.isolation?.process(bufferList, frames: frames, start: start * sampleRate)
+                }
                 let master = context.master?.value ?? 1
                 withUnsafeTemporaryAllocation(of: Float.self, capacity: frames) { gains in
                     for frame in 0..<frames {

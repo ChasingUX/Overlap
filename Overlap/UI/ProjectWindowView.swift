@@ -2,8 +2,9 @@ import SwiftUI
 
 struct ProjectWindowView: View {
     @Bindable var store: ProjectStore
-    @State private var previewHeight: CGFloat = 380
-    @State private var dragStartHeight: CGFloat?
+    /// The controls bar and timeline keep their height as the window resizes; the preview takes the rest.
+    @State private var timelineHeight: CGFloat = 380
+    @State private var dragStartTimelineHeight: CGFloat?
 
     /// The preview row also holds the panel, so it keeps enough height for the panel's controls.
     private let minimumPreviewHeight: CGFloat = 240
@@ -88,8 +89,10 @@ struct ProjectWindowView: View {
         .background(Color(nsColor: Theme.chrome))
     }
 
-    private func clampedPreviewHeight(_ height: CGFloat? = nil, in total: CGFloat) -> CGFloat {
-        (height ?? previewHeight).clamped(to: minimumPreviewHeight...max(minimumPreviewHeight, total - minimumTimelineHeight))
+    /// The preview gets what the timeline leaves, within both minimums: a window too short for the timeline's
+    /// height squeezes the timeline only once the preview is as small as it goes.
+    private func clampedPreviewHeight(timeline: CGFloat? = nil, in total: CGFloat) -> CGFloat {
+        (total - (timeline ?? timelineHeight)).clamped(to: minimumPreviewHeight...max(minimumPreviewHeight, total - minimumTimelineHeight))
     }
 
     private static let editorSpace = "editor"
@@ -107,11 +110,12 @@ struct ProjectWindowView: View {
             .gesture(DragGesture(minimumDistance: 1, coordinateSpace: .named(Self.editorSpace))
                 .onChanged { drag in
                     // Start from the height as shown, so a drag begun past a limit doesn't jump.
-                    let start = dragStartHeight ?? clampedPreviewHeight(in: total)
-                    dragStartHeight = start
-                    previewHeight = clampedPreviewHeight(start + drag.translation.height, in: total)
+                    let start = dragStartTimelineHeight ?? total - clampedPreviewHeight(in: total)
+                    dragStartTimelineHeight = start
+                    // Dragging the divider down grows the preview and shortens the timeline.
+                    timelineHeight = total - clampedPreviewHeight(timeline: start - drag.translation.height, in: total)
                 }
-                .onEnded { _ in dragStartHeight = nil })
+                .onEnded { _ in dragStartTimelineHeight = nil })
     }
 
     /// The controls bar and timeline, full width. `covered` is how much of their left side the panel is over.

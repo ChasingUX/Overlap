@@ -3,8 +3,9 @@ import AVFoundation
 import Observation
 
 enum PanelTab: Int, CaseIterable, Identifiable {
-    /// Transitions only shows while a crossfade is selected.
-    case media = 1, canvas, video, audio, text, transitions
+    /// In the rail's order, which is also the View menu's: ⌘1 is Canvas. Transitions only shows while a crossfade
+    /// is selected, at the bottom, so nothing moves when it comes and goes.
+    case canvas = 1, video, audio, text, media, transitions
 
     var id: Int { rawValue }
 
@@ -68,7 +69,7 @@ struct PendingImport: Identifiable {
 final class ProjectStore {
     private(set) var project: Project
     private(set) var selection: Set<UUID> = []
-    var activeTab: PanelTab = .media
+    var activeTab: PanelTab = .canvas
     var isPanelVisible = true
     var pixelsPerSecond: Double = 40
     var timelineViewportWidth: Double = 800
@@ -121,6 +122,9 @@ final class ProjectStore {
     @ObservationIgnored private var analyzing: Set<UUID> = []
     @ObservationIgnored private var isolating: Set<UUID> = []
     @ObservationIgnored private var rebuildTask: Task<Void, Never>?
+    /// The layout of the composition the player has, to tell edits that only change how things look and sound.
+    @ObservationIgnored private var installedLayout: CompositionBuilder.Layout?
+    @ObservationIgnored private var installedMix: CompositionBuilder.Mix?
 
     static let pixelsPerSecondRange = 2.0...800.0
 
@@ -137,10 +141,21 @@ final class ProjectStore {
         self.project = project
         self.mediaDirectory = mediaDirectory
         avAssets = [:]
+        installedLayout = nil
         selection = []
         project.assets.forEach(analyze)
         analyzeIsolatedVoices()
         playback.setMasterVolume(project.masterVolume)
+        rebuildPlayback()
+    }
+
+    /// After the project file moves, media is read from its new place: anything opened from the old one is let
+    /// go, and playback is built again from the new.
+    func mediaFolderMoved(to directory: URL) {
+        guard directory != mediaDirectory else { return }
+        mediaDirectory = directory
+        avAssets = [:]
+        installedLayout = nil
         rebuildPlayback()
     }
 
@@ -200,11 +215,20 @@ final class ProjectStore {
         rebuildTask?.cancel()
         let project = project
         let options = CompositionBuilder.Options(prototypeFades: prototypeFades, master: playback.masterGain)
+        let layout = CompositionBuilder.layout(of: project)
+        let mix = CompositionBuilder.mix(of: project, options: options)
         rebuildTask = Task {
             do {
                 let built = try await CompositionBuilder.build(project: project, assets: { self.avAsset(for: $0) }, options: options)
                 guard !Task.isCancelled else { return }
-                playback.install(built)
+                // Same clips in the same places: the player keeps its item and shows the change on its next frame.
+                if layout == installedLayout {
+                    playback.refresh(with: built, mixChanged: mix != installedMix)
+                } else {
+                    playback.install(built)
+                    installedLayout = layout
+                }
+                installedMix = mix
             } catch {
                 guard !Task.isCancelled else { return }
                 alert = AlertMessage(title: "Playback couldn't be updated", message: error.localizedDescription)
@@ -485,7 +509,7 @@ final class ProjectStore {
         }
     }
 
-    @ObservationIgnored private var previousTab: PanelTab = .media
+    @ObservationIgnored private var previousTab: PanelTab = .canvas
 
     func setCrossfadeCurve(_ curve: Curve) {
         guard let incoming = selectedTransition else { return }
@@ -621,6 +645,11 @@ final class ProjectStore {
         }
     }
 
+    /// Whether a clip with a picture is under the playhead, for the Video tab to offer it.
+    var hasPictureAtPlayhead: Bool {
+        clips(at: playback.currentTime).contains { id in project.clip(id).map(project.showsPicture) ?? false }
+    }
+
     func selectClipAtPlayhead() {
         if let top = clips(at: playback.currentTime).first {
             select([top])
@@ -705,6 +734,11 @@ final class ProjectStore {
     /// What the next export makes. Without a picture on the timeline, that's sound only.
     var exportFormat: ExportSettings.Format {
         project.hasVisualClips ? exportSettings.format : exportSettings.audioFormat
+    }
+
+    /// Whether there's anything to export, and no export already running.
+    var canExport: Bool {
+        project.duration > .zero && !isExporting
     }
 
     func requestExport() {

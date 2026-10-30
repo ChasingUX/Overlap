@@ -7,6 +7,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     static func main() {
         let app = NSApplication.shared
+        // Always dark, whatever the system's setting: the colors are made for it, and footage reads best on it.
+        app.appearance = NSAppearance(named: .darkAqua)
         app.delegate = shared
         app.mainMenu = MainMenu.make()
         app.run()

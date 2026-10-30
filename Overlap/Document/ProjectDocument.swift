@@ -21,6 +21,17 @@ final class ProjectDocument: NSDocument {
 
     override class var autosavesInPlace: Bool { true }
 
+    /// A saved project that's moved or renamed reads its media from its new place. The first save into a
+    /// location is handled in `save(to:ofType:for:completionHandler:)`.
+    override var fileURL: URL? {
+        didSet {
+            guard let fileURL, let oldValue, fileURL != oldValue else { return }
+            MainActor.assumeIsolated {
+                store.mediaFolderMoved(to: fileURL.appending(path: Self.mediaFolderName, directoryHint: .isDirectory))
+            }
+        }
+    }
+
     override func makeWindowControllers() {
         addWindowController(ProjectWindowController(store: store))
     }
@@ -225,6 +236,8 @@ final class ProjectDocument: NSDocument {
             return !store.selection.isEmpty
         case #selector(pasteClips(_:)):
             return store.canPaste
+        case #selector(exportProject(_:)):
+            return store.canExport
         case #selector(detachAudio(_:)):
             return store.canDetachAudio
         case #selector(toggleFadeIn(_:)):

@@ -21,8 +21,8 @@ struct PictureTransition: Hashable, Sendable {
 }
 
 /// One clip's picture, as the compositor draws it.
-struct RenderLayer: Sendable {
-    enum Source: Sendable {
+struct RenderLayer: Sendable, Equatable {
+    enum Source: Sendable, Equatable {
         /// A frame from a composition video track, turned upright.
         case video(trackID: CMPersistentTrackID, orientation: CGImagePropertyOrientation)
         case image(URL)
@@ -52,7 +52,7 @@ struct RenderLayer: Sendable {
 
 /// Everything the compositor needs to draw any frame: the canvas, its background and frame, and every picture
 /// layer from the bottom track up.
-struct RenderPlan: Sendable {
+struct RenderPlan: Sendable, Equatable {
     var canvas: CGSize
     var background: ResolvedFill?
     var frame: PictureFrame

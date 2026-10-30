@@ -28,6 +28,9 @@ final class PlaybackController {
     }
 
     #if DEBUG
+    /// Whether a rebuilt composition's seek is still pending.
+    var debugIsSwapping: Bool { isSwapping }
+
     /// Every time the player reports, while a debug check is recording.
     @ObservationIgnored var reportedTimes: [Double]?
     #endif
@@ -60,6 +63,29 @@ final class PlaybackController {
     func redrawPicture() {
         guard !isPlaying, let item = player.currentItem, let videoConfiguration else { return }
         item.videoComposition = AVVideoComposition(configuration: videoConfiguration)
+    }
+
+    /// Takes a rebuilt composition's picture and sound into the item that's playing, for a change that leaves the
+    /// timeline's layout as it was: the item keeps its decoders, so the change shows on the very next frame instead
+    /// of waiting for a new item to seek and decode. Only for builds with the same `CompositionBuilder.Layout`.
+    /// The picture is replaced only when it looks different, and the sound only when `mixChanged`: a new mix makes
+    /// the item refill its audio, and a new picture makes it draw again.
+    func refresh(with built: BuiltComposition, mixChanged: Bool) {
+        guard let item = player.currentItem else {
+            install(built)
+            return
+        }
+        let pictureChanged = built.plan?.current != plan?.current
+            || built.videoConfiguration?.renderSize != videoConfiguration?.renderSize
+            || built.videoConfiguration?.frameDuration != videoConfiguration?.frameDuration
+        if pictureChanged {
+            plan = built.plan
+            videoConfiguration = built.videoConfiguration
+            item.videoComposition = built.videoComposition
+        }
+        if mixChanged {
+            item.audioMix = built.audioMix
+        }
     }
 
     /// Swaps in a rebuilt composition, keeping the playhead and play state.

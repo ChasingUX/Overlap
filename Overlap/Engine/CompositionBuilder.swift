@@ -39,6 +39,81 @@ enum CompositionBuilder {
         var preferredTransform: CGAffineTransform = .identity
     }
 
+    /// Everything that decides which composition tracks a build makes and what plays on them. Two projects with
+    /// the same layout build the same tracks, with the same IDs, in the same places; they differ only in how
+    /// things look and sound, which lives in the render plan and the audio mix. So a rebuilt plan and mix can go
+    /// straight into the item that's playing, which keeps its decoders and shows the change on its next frame.
+    struct Layout: Hashable {
+        struct Placement: Hashable {
+            var id: UUID
+            var assetID: UUID
+            var start: Time
+            var sourceStart: Time
+            var duration: Time
+            var speed: Double
+            var usesVideo: Bool
+            var usesAudio: Bool
+            var keepsPitch: Bool
+            var isolatesVoice: Bool
+            var isTitle: Bool
+            var isFill: Bool
+        }
+
+        var assets: [UUID]
+        var tracks: [[Placement]]
+    }
+
+    /// Everything about a build that's heard rather than seen: volumes, fades, crossfade curves, mute and solo,
+    /// and the master volume when it's built in. When only this changes, the audio mix is all that's new.
+    struct Mix: Hashable {
+        struct Sound: Hashable {
+            var id: UUID
+            var volume: Double
+            var fadeIn: Fade
+            var fadeOut: Fade
+            var crossfadeCurve: Curve?
+        }
+
+        struct Lane: Hashable {
+            var volume: Double
+            var isMuted: Bool
+            var isSoloed: Bool
+            var sounds: [Sound]
+        }
+
+        var lanes: [Lane]
+        var defaultCrossfadeCurve: Curve
+        var builtInMaster: Double?
+        var prototypeFades: Bool
+    }
+
+    static func mix(of project: Project, options: Options) -> Mix {
+        Mix(
+            lanes: project.tracks.map { track in
+                Mix.Lane(volume: track.volume, isMuted: track.isMuted, isSoloed: track.isSoloed, sounds: track.clips.map { clip in
+                    Mix.Sound(id: clip.id, volume: clip.volume, fadeIn: clip.fadeIn, fadeOut: clip.fadeOut, crossfadeCurve: clip.crossfadeCurve)
+                })
+            },
+            defaultCrossfadeCurve: project.defaultCrossfadeCurve,
+            builtInMaster: options.master == nil ? project.masterVolume : nil,
+            prototypeFades: options.prototypeFades
+        )
+    }
+
+    static func layout(of project: Project) -> Layout {
+        Layout(
+            assets: project.assets.map(\.id),
+            tracks: project.tracks.map { track in
+                track.clips.sorted { $0.start < $1.start }.map { clip in
+                    Layout.Placement(id: clip.id, assetID: clip.assetID, start: clip.start, sourceStart: clip.sourceStart,
+                                     duration: clip.duration, speed: clip.speed, usesVideo: clip.usesVideo, usesAudio: clip.usesAudio,
+                                     keepsPitch: clip.preservesPitch || clip.speed == 1, isolatesVoice: clip.isolatesVoice,
+                                     isTitle: clip.title != nil, isFill: clip.fill != nil)
+                }
+            }
+        )
+    }
+
     static func build(project: Project, assets: (UUID) -> AVURLAsset?, options: Options = Options()) async throws -> BuiltComposition {
         // Media files are opened for their tracks; images and wallpapers only need their file.
         var loaded: [UUID: LoadedAsset] = [:]

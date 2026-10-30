@@ -15,10 +15,21 @@ struct VideoPanel: View {
                 picture(clip)
             }
         } else {
-            PlaceholderPanel(icon: .video, title: "Select a video clip",
-                             message: "Position, look and color settings for the selected picture show up here.",
-                             action: ("Select Clip at Playhead", store.selectClipAtPlayhead))
+            if !store.project.hasVisualClips {
+                PlaceholderPanel(icon: .video, title: "Select a video clip",
+                                 message: "Add a video, image or title to the timeline, then select it to place it and set its look.")
+            } else {
+                PlaceholderPanel(icon: .video, title: "Select a video clip",
+                                 message: "Position, look and color settings for the selected picture show up here.",
+                                 action: playheadAction)
+            }
         }
+    }
+
+    /// Offered only when there's a picture under the playhead to select.
+    private var playheadAction: (title: String, perform: () -> Void)? {
+        guard store.hasPictureAtPlayhead else { return nil }
+        return (title: "Select Clip at Playhead", perform: { store.selectClipAtPlayhead() })
     }
 
     private func picture(_ clip: Clip) -> some View {

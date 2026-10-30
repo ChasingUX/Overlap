@@ -43,6 +43,15 @@ enum DebugSnapshot {
             // OVERLAP_SNAPSHOT_SELECT=video selects the video showing at the playhead and opens the Video tab.
             // OVERLAP_SNAPSHOT_HANDLE=move or scale then drags it in the preview, 120 points right and 60 down.
             var handleReport: [String: Any] = [:]
+            // Without one at the playhead, the playhead moves into the first video.
+            if environment["OVERLAP_SNAPSHOT_SELECT"] == "video", let store = document?.store,
+               !store.project.tracks.flatMap(\.clips).contains(where: {
+                   store.project.asset($0.assetID)?.kind == .video && $0.start <= store.playback.currentTime && store.playback.currentTime < $0.end
+               }),
+               let first = store.project.tracks.flatMap(\.clips).filter({ store.project.asset($0.assetID)?.kind == .video }).min(by: { $0.start < $1.start }) {
+                store.playback.seek(to: first.start + Time(seconds: 1))
+                try? await Task.sleep(for: .milliseconds(300))
+            }
             if environment["OVERLAP_SNAPSHOT_SELECT"] == "video", let store = document?.store,
                let video = store.project.tracks.flatMap(\.clips).first(where: {
                    store.project.asset($0.assetID)?.kind == .video && $0.start <= store.playback.currentTime && store.playback.currentTime < $0.end
@@ -183,6 +192,166 @@ enum DebugSnapshot {
             if let empty = ["master": PanelTab.audio, "titles": .text][environment["OVERLAP_SNAPSHOT_TAB"] ?? ""], let store = document?.store {
                 store.select([])
                 store.activeTab = empty
+                try? await Task.sleep(for: .milliseconds(300))
+            }
+            // OVERLAP_SNAPSHOT_PERF=1 measures the spec's performance targets on the open project: a full rebuild,
+            // five edits from the change to the new frame on screen, a full timeline redraw, and frames dropped
+            // over ten seconds of playback from the middle.
+            var perfReport: [String: Any] = [:]
+            if environment["OVERLAP_SNAPSHOT_PERF"] != nil, let store = document?.store,
+               let window = NSApplication.shared.windows.first(where: \.isVisible), let content = window.contentView,
+               let preview = find(PlayerLayerView.self, in: content), let timeline = findTimeline(in: content) {
+                let clock = ContinuousClock()
+                let seconds = { (duration: Duration) in Double(duration.components.attoseconds) / 1e18 + Double(duration.components.seconds) }
+                let buildStart = clock.now
+                _ = try? await CompositionBuilder.build(project: store.project, assets: { store.avAsset(for: $0) })
+                let build = seconds(clock.now - buildStart)
+
+                let middle = store.project.duration.seconds / 2
+                store.playback.seek(to: Time(seconds: middle))
+                try? await Task.sleep(for: .milliseconds(800))
+                let picture = store.project.tracks.flatMap(\.clips).first { store.project.showsPicture($0) && $0.start.seconds <= middle && middle < $0.end.seconds }
+                /// How long a change takes to show: until the compositor has drawn a frame of the new build and no
+                /// held frame covers it.
+                @MainActor func timeToShow(_ change: () -> Void) async -> Double {
+                    let oldPlan = store.playback.plan
+                    // Paused, the compositor only draws when asked, so any frame from here on is the new one.
+                    let rendersBefore = Compositor.renders.load(ordering: .relaxed)
+                    let start = clock.now
+                    change()
+                    while clock.now - start < .seconds(5) {
+                        if store.playback.plan !== oldPlan, Compositor.renders.load(ordering: .relaxed) > rendersBefore,
+                           !store.playback.debugIsSwapping, !preview.debugDisplayState.stillShown {
+                            break
+                        }
+                        try? await Task.sleep(for: .milliseconds(1))
+                    }
+                    let elapsed = seconds(clock.now - start)
+                    try? await Task.sleep(for: .milliseconds(300))
+                    return elapsed
+                }
+                var edits: [Double] = []
+                var moves: [Double] = []
+                if let picture {
+                    for step in 0..<5 {
+                        edits.append(await timeToShow {
+                            store.apply("Measure") { $0.changeVisual(of: [picture.id]) { $0.opacity = 0.9 - Double(step) * 0.1 } }
+                        })
+                    }
+                }
+                // Nudging a sound clip changes the layout, so these need a new item.
+                if let sound = store.project.tracks.flatMap(\.clips).first(where: { !store.project.showsPicture($0) && $0.start.seconds > middle }),
+                   let location = store.project.location(ofClip: sound.id) {
+                    for step in 0..<5 {
+                        moves.append(await timeToShow {
+                            store.apply("Measure") { $0.tracks[location.track].clips[location.clip].start = sound.start + Time(seconds: Double(step + 1) * 0.1) }
+                        })
+                    }
+                }
+
+                var draws: [Double] = []
+                for _ in 0..<5 {
+                    let start = clock.now
+                    timeline.needsDisplay = true
+                    timeline.displayIfNeeded()
+                    draws.append(seconds(clock.now - start))
+                }
+
+                // Counted from a second in, once playback has settled.
+                store.playback.togglePlay()
+                try? await Task.sleep(for: .seconds(1))
+                let rendersBefore = Compositor.renders.load(ordering: .relaxed)
+                let playStart = clock.now
+                try? await Task.sleep(for: .seconds(9))
+                let played = seconds(clock.now - playStart)
+                let rendered = Compositor.renders.load(ordering: .relaxed) - rendersBefore
+                store.playback.pause()
+                let event = store.playback.player.currentItem?.accessLog()?.events.last
+                perfReport = [
+                    "clips": store.project.tracks.flatMap(\.clips).count,
+                    "tracks": store.project.tracks.count,
+                    "duration": store.project.duration.seconds,
+                    "buildSeconds": build,
+                    "lookEditSeconds": edits,
+                    "moveEditSeconds": moves,
+                    "timelineDrawSeconds": draws,
+                    "renderedFramesPerSecond": Double(rendered) / played,
+                    "droppedFrames": event?.numberOfDroppedVideoFrames ?? -1,
+                    "stalls": event?.numberOfStalls ?? -1,
+                ]
+            }
+
+            // OVERLAP_SNAPSHOT_WINDOWRESIZE=1 makes the window 200 points taller, then 400 shorter, and reports the
+            // preview's and the timeline area's heights at each size. The timeline should hold its height.
+            var windowResize: [[Double]] = []
+            if environment["OVERLAP_SNAPSHOT_WINDOWRESIZE"] != nil,
+               let window = NSApplication.shared.windows.first(where: \.isVisible), let content = window.contentView,
+               let preview = find(PlayerLayerView.self, in: content) {
+                let measure = {
+                    windowResize.append([Double(content.bounds.height), Double(preview.frame.height), Double(content.bounds.height - preview.frame.height)])
+                }
+                measure()
+                for change in [200.0, -400.0] {
+                    var frame = window.frame
+                    frame.origin.y -= change
+                    frame.size.height += change
+                    window.setFrame(frame, display: true)
+                    try? await Task.sleep(for: .milliseconds(400))
+                    measure()
+                }
+            }
+
+            // OVERLAP_SNAPSHOT_SAVEPANEL=1 presses Save in a new, unsaved project and reports the sheet it shows, which
+            // should be the save panel with a name and a place to save, then cancels it.
+            var savePanelReport: [String: Any] = [:]
+            if environment["OVERLAP_SNAPSHOT_SAVEPANEL"] != nil, let document, document.fileURL == nil,
+               let window = document.windowControllers.first?.window {
+                document.save(nil)
+                try? await Task.sleep(for: .milliseconds(800))
+                let panel = window.attachedSheet as? NSSavePanel
+                savePanelReport = [
+                    "sheet": window.attachedSheet.map { String(describing: type(of: $0)) } ?? "none",
+                    "isSavePanel": panel != nil,
+                    "name": panel?.nameFieldStringValue ?? "",
+                    "folder": panel?.directoryURL?.path ?? "",
+                    "canPickFolder": panel.map { !$0.isExpanded || $0.isExpanded } ?? false,
+                ]
+                if let sheet = window.attachedSheet { window.endSheet(sheet, returnCode: .cancel) }
+                try? await Task.sleep(for: .milliseconds(300))
+            }
+
+            // OVERLAP_SNAPSHOT_MOVE=<folder> moves the saved project there, as Move To… and renaming do, then checks
+            // that its media loads from the new place and that it still plays.
+            var moveReport: [String: Any] = [:]
+            if let folder = environment["OVERLAP_SNAPSHOT_MOVE"], let document, let url = document.fileURL {
+                let store = document.store
+                let destination = URL(filePath: folder).appending(path: url.lastPathComponent)
+                let moved = await withCheckedContinuation { (continuation: CheckedContinuation<String, Never>) in
+                    document.move(to: destination) { error in
+                        continuation.resume(returning: error?.localizedDescription ?? "")
+                    }
+                }
+                try? await Task.sleep(for: .milliseconds(500))
+                let before = store.playback.currentTime.seconds
+                store.playback.togglePlay()
+                try? await Task.sleep(for: .seconds(1))
+                store.playback.pause()
+                moveReport = [
+                    "error": moved,
+                    "fileURL": document.fileURL?.path ?? "",
+                    "mediaDirectory": store.mediaDirectory.path,
+                    "mediaFound": store.project.assets.allSatisfy { FileManager.default.fileExists(atPath: store.mediaURL(for: $0).path) },
+                    "played": store.playback.currentTime.seconds - before,
+                    "playerError": store.playback.player.currentItem?.error?.localizedDescription ?? "",
+                ]
+            }
+
+            // OVERLAP_SNAPSHOT_PANEL=<tab> opens any tab with nothing selected, for its empty state.
+            if let tab = environment["OVERLAP_SNAPSHOT_PANEL"].flatMap({ name in PanelTab.allCases.first { $0.title.lowercased() == name } }),
+               let store = document?.store {
+                store.select([])
+                store.selectTransition(nil)
+                store.activeTab = tab
                 try? await Task.sleep(for: .milliseconds(300))
             }
             // OVERLAP_SNAPSHOT_TAB=video or audio selects the top track's first clip and opens that tab.
@@ -460,6 +629,10 @@ enum DebugSnapshot {
                     "handle": handleReport,
                     "textEdit": textEditReport,
                     "export": exportReport,
+                    "perf": perfReport,
+                    "windowResize": windowResize,
+                    "move": moveReport,
+                    "savePanel": savePanelReport,
                     "isolation": isolationReport,
                     "windowTitle": store.windowTitle,
                     "titleEdit": titleEdit,
