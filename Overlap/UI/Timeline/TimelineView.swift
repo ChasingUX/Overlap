@@ -72,6 +72,14 @@ final class TimelineView: NSView {
     private var lastLaneTargets: [UUID: CGFloat] = [:]
     /// The clip under the pointer, which shows its fade handles.
     private var hoveredClip: UUID?
+    /// Frames for text clips, drawn once for each look and size.
+    private struct TitleFrameKey: Hashable {
+        var title: Title
+        var visual: Visual
+        var canvas: Canvas
+        var height: Int
+    }
+    private var titleFrames: [TitleFrameKey: CGImage] = [:]
 
     var snapshot: TimelineSnapshot {
         didSet { snapshotDidChange(from: oldValue) }
@@ -96,6 +104,8 @@ final class TimelineView: NSView {
 
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
+    /// Drags here move clips and tracks, with or without modifiers; they never move the window.
+    override var mouseDownCanMoveWindow: Bool { false }
 
     // MARK: Geometry
 
@@ -647,6 +657,12 @@ final class TimelineView: NSView {
         curve.stroke()
     }
 
+    /// How text comes in or goes out, over its first or last half second: the same ramp a sound fade draws.
+    private func drawTitleAnimation(_ animation: TitleAnimation, edge: Project.ClipEdge, in rect: CGRect) {
+        guard animation != .none else { return }
+        drawFadeShade(Fade(duration: Time(seconds: TitleAnimation.duration), curve: .sCurve), edge: edge, in: rect)
+    }
+
     /// White dots on the top edge where each fade ends; dragging one sets the fade's length.
     private func drawFadeHandles(_ clip: Clip, edges: [Project.ClipEdge], in rect: CGRect) {
         for edge in edges {
@@ -727,14 +743,23 @@ final class TimelineView: NSView {
         }
         var waveformArea = rect.insetBy(dx: 0, dy: 4)
         let filmstrip = snapshot.filmstrips[clip.assetID]
-        let thumbnail = snapshot.thumbnails[clip.assetID]
         let hasSound = project.playsSound(clip)
+        let canvas = project.canvas ?? Project.defaultCanvas
+        // Text shows as a frame of the canvas with the text in place; media shows its own frames.
+        let thumbnail = clip.title != nil ? titleFrame(for: clip, canvas: canvas, height: rect.height) : snapshot.thumbnails[clip.assetID]
         let hasFrames = project.showsPicture(clip) && (filmstrip != nil || thumbnail != nil)
-        if hasFrames, let asset {
+        if hasFrames {
             let frames = hasSound
                 ? CGRect(x: rect.minX, y: rect.minY, width: rect.width, height: rect.height * 0.6)
                 : rect
-            drawFilmstrip(filmstrip, fallback: thumbnail, asset: asset, clip: clip, in: frames)
+            let aspect: Double = if let ratio = filmstrip?.aspectRatio {
+                ratio
+            } else if clip.title == nil, let width = asset?.pixelWidth, let height = asset?.pixelHeight, height > 0 {
+                Double(width) / Double(height)
+            } else {
+                Double(canvas.width) / Double(max(canvas.height, 1))
+            }
+            drawFilmstrip(filmstrip, fallback: thumbnail, aspect: aspect, clip: clip, in: frames)
             waveformArea = CGRect(x: rect.minX, y: frames.maxY, width: rect.width, height: rect.maxY - frames.maxY)
         } else if isAudio {
             waveformArea = CGRect(x: rect.minX, y: rect.minY + 16, width: rect.width, height: rect.height - 18)
@@ -749,6 +774,10 @@ final class TimelineView: NSView {
         if hasSound {
             drawFadeShade(clip.playedFade(.start, crossfades: crossfades), edge: .start, in: rect)
             drawFadeShade(clip.playedFade(.end, crossfades: crossfades), edge: .end, in: rect)
+        }
+        if let title = clip.title {
+            drawTitleAnimation(title.animationIn, edge: .start, in: rect)
+            drawTitleAnimation(title.animationOut, edge: .end, in: rect)
         }
         NSGraphicsContext.restoreGraphicsState()
 
@@ -770,6 +799,21 @@ final class TimelineView: NSView {
         // An incoming clip's name starts after its crossfade, which draws over the clip's start.
         let crossfadeIn = crossfades.first { $0.incoming.id == clip.id }
         drawLabel(name, in: rect, overImage: hasFrames || clip.fill != nil, leadingInset: crossfadeIn.map { CGFloat($0.range.duration.seconds) * pixelsPerSecond } ?? 0)
+    }
+
+    /// A text clip's frame at the track's height, in screen pixels. Heights round up to steps, so tracks easing
+    /// between heights don't draw a new frame every step.
+    private func titleFrame(for clip: Clip, canvas: Canvas, height: CGFloat) -> CGImage? {
+        guard let title = clip.title else { return nil }
+        let pixels = Int((height * (window?.backingScaleFactor ?? 2) / 24).rounded(.up)) * 24
+        let key = TitleFrameKey(title: title, visual: clip.visual, canvas: canvas, height: pixels)
+        if let cached = titleFrames[key] { return cached }
+        guard let frame = TitleRenderer.frame(for: title, visual: clip.visual,
+                                              canvas: CGSize(width: canvas.width, height: canvas.height), height: pixels) else { return nil }
+        // Old looks pile up as text is edited; starting over now and then keeps the cache small.
+        if titleFrames.count > 64 { titleFrames.removeAll() }
+        titleFrames[key] = frame
+        return frame
     }
 
     private func drawFill(_ fill: BackgroundFill, in rect: CGRect) {
@@ -797,16 +841,8 @@ final class TimelineView: NSView {
     }
 
     /// Tiles frames across the clip, each showing the moment at its own position on the timeline.
-    private func drawFilmstrip(_ filmstrip: Filmstrip?, fallback: CGImage?, asset: Asset, clip: Clip, in rect: CGRect) {
+    private func drawFilmstrip(_ filmstrip: Filmstrip?, fallback: CGImage?, aspect: Double, clip: Clip, in rect: CGRect) {
         guard let context = NSGraphicsContext.current?.cgContext else { return }
-        let aspect: Double
-        if let ratio = filmstrip?.aspectRatio {
-            aspect = ratio
-        } else if let width = asset.pixelWidth, let height = asset.pixelHeight, height > 0 {
-            aspect = Double(width) / Double(height)
-        } else {
-            aspect = 16 / 9
-        }
         let tileWidth = rect.height * CGFloat(aspect)
         guard tileWidth > 1 else { return }
 

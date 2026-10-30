@@ -208,8 +208,45 @@ final class ProjectStore {
         }
     }
 
-    /// The preview's handles crop the selected picture instead of moving and scaling it.
+    /// The picture showing handles in the preview. Handles appear when a picture is clicked there (or Crop is
+    /// chosen for it), not when it's selected on the timeline, and go when the selection changes.
+    var handlesClip: UUID?
+
+    /// The preview's handles crop the picture instead of moving and scaling it.
     var isCropping = false
+
+    /// The text clip being typed into on the canvas. Its rendered text is left out of the picture meanwhile.
+    var editingTitleClip: UUID?
+
+    /// Starts typing into a text clip on the canvas.
+    func beginEditingTitle(_ id: UUID) {
+        guard project.clip(id)?.title != nil, !project.isLocked(clip: id) else { return }
+        if selection != [id] { select([id]) }
+        handlesClip = id
+        editingTitleClip = id
+        playback.plan?.update { $0.hiddenClip = id }
+        playback.redrawPicture()
+    }
+
+    /// Ends typing on the canvas: new text becomes one undo step; nil, as for Esc, leaves the text as it was.
+    func endEditingTitle(text: String?) {
+        guard let id = editingTitleClip else { return }
+        editingTitleClip = nil
+        playback.plan?.update { $0.hiddenClip = nil }
+        if let text, text != project.clip(id)?.title?.text {
+            apply("Edit Text") { $0.changeTitle(of: [id]) { $0.text = text } }
+        } else {
+            playback.redrawPicture()
+        }
+    }
+
+    /// Turns crop mode on or off for the selected picture, showing its handles.
+    func toggleCropping() {
+        isCropping.toggle()
+        if isCropping, selection.count == 1 {
+            handlesClip = selection.first
+        }
+    }
 
     /// Changes the selected text clips' text or look, as one undo step.
     func setTitle(_ name: String, _ change: @escaping (inout Title) -> Void) {
@@ -599,6 +636,10 @@ final class ProjectStore {
 
     func select(_ ids: Set<UUID>) {
         if !ids.isEmpty { selectTransition(nil) }
+        if handlesClip.map({ [$0] }) != ids {
+            handlesClip = nil
+            isCropping = false
+        }
         selection = ids
         let applicable = applicableTabs
         // Clip tabs follow the selection; Media and Canvas never switch on their own.

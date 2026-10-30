@@ -50,18 +50,62 @@ enum DebugSnapshot {
                 store.select([video.id])
                 store.activeTab = .video
                 try? await Task.sleep(for: .milliseconds(400))
-                if let kind = environment["OVERLAP_SNAPSHOT_HANDLE"],
+                // OVERLAP_SNAPSHOT_HANDLE=outside clicks the picture, then outside the canvas.
+                if environment["OVERLAP_SNAPSHOT_HANDLE"] == "outside",
+                   let overlay = NSApplication.shared.windows.lazy.compactMap({ $0.contentView.flatMap { find(TransformOverlay.self, in: $0) } }).first,
+                   let result = await overlay.debugClickOutsideCanvas() {
+                    handleReport = ["handlesAfterPictureClick": result.afterPicture, "handlesAfterOutsideClick": result.afterOutside]
+                }
+                // OVERLAP_SNAPSHOT_HANDLE=corner or cornermiddle scales it by its bottom-right corner, with Option for the second.
+                if let kind = environment["OVERLAP_SNAPSHOT_HANDLE"], kind.hasPrefix("corner"),
+                   let overlay = NSApplication.shared.windows.lazy.compactMap({ $0.contentView.flatMap { find(TransformOverlay.self, in: $0) } }).first,
+                   let result = await overlay.debugCornerScale(fromMiddle: kind == "cornermiddle") {
+                    handleReport = ["topLeftMoved": result.cornerMoved, "middleMoved": result.middleMoved, "scale": result.scale]
+                }
+                // OVERLAP_SNAPSHOT_HANDLE=snap or snapcommand drags its left edge to just short of the canvas's middle.
+                if let kind = environment["OVERLAP_SNAPSHOT_HANDLE"], kind.hasPrefix("snap"),
+                   let overlay = NSApplication.shared.windows.lazy.compactMap({ $0.contentView.flatMap { find(TransformOverlay.self, in: $0) } }).first,
+                   let result = await overlay.debugSnapToMiddle(holdingCommand: kind == "snapcommand") {
+                    handleReport = ["gapFromMiddle": result.gap, "guidesShown": result.guides]
+                } else if let kind = environment["OVERLAP_SNAPSHOT_HANDLE"], kind == "move" || kind == "scale",
                    let overlay = NSApplication.shared.windows.lazy.compactMap({ $0.contentView.flatMap { find(TransformOverlay.self, in: $0) } }).first {
                     let before = store.project.clip(video.id)?.visual
-                    let dragged = overlay.debugDrag(fromCorner: kind == "scale", by: CGSize(width: 120, height: 60))
+                    let drawn = await overlay.debugDrag(fromCorner: kind == "scale", by: CGSize(width: 120, height: 60))
                     try? await Task.sleep(for: .milliseconds(600))
                     let after = store.project.clip(video.id)?.visual
                     handleReport = [
-                        "dragged": dragged,
+                        "dragged": drawn != nil,
+                        "framesDrawnDuringDrag": drawn ?? [],
                         "before": [before?.x ?? 0, before?.y ?? 0, before?.scale ?? 0],
                         "after": [after?.x ?? 0, after?.y ?? 0, after?.scale ?? 0],
                         "canUndo": store.undoManager?.canUndo ?? false,
                     ]
+                }
+            }
+
+            // OVERLAP_SNAPSHOT_TITLES=1 lays out every title style one after another on a new top track, from 0 s.
+            if environment["OVERLAP_SNAPSHOT_TITLES"] != nil, let store = document?.store {
+                store.apply("Titles") { project in
+                    let track = project.tracks.count
+                    for (index, style) in TitleStyle.allCases.enumerated() {
+                        let target: TrackTarget = index == 0 ? .new(at: track) : .existing(project.tracks[track].id)
+                        project.addTitle(style.title, visual: style.visual, at: Time(seconds: Double(index) * 5), target: target)
+                    }
+                }
+                try? await Task.sleep(for: .milliseconds(500))
+            }
+
+            // OVERLAP_SNAPSHOT_TEXTEDIT=commit or cancel double-clicks the first text showing, types into it on the
+            // canvas, captures the window midway as `<prefix>-editing.png`, then applies or cancels.
+            var textEditReport: [String: Any] = [:]
+            if let mode = environment["OVERLAP_SNAPSHOT_TEXTEDIT"],
+               let overlay = NSApplication.shared.windows.lazy.compactMap({ $0.contentView.flatMap { find(TransformOverlay.self, in: $0) } }).first {
+                textEditReport = await overlay.debugEditTitle(typing: "Typed on the canvas", cancel: mode == "cancel") {
+                    if let window = overlay.window, let view = window.contentView?.superview,
+                       let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+                        view.cacheDisplay(in: view.bounds, to: bitmap)
+                        try? bitmap.representation(using: .png, properties: [:])?.write(to: URL(filePath: "\(prefix)-editing.png"))
+                    }
                 }
             }
 
@@ -258,14 +302,20 @@ enum DebugSnapshot {
                let window = NSApplication.shared.windows.first(where: \.isVisible),
                let preview = window.contentView.flatMap({ find(PlayerLayerView.self, in: $0) }) {
                 let edge = preview.convert(preview.bounds, to: nil)
+                // Focused, with events posted at real times, as a person's drag arrives.
+                NSApplication.shared.activate(ignoringOtherApps: true)
+                window.makeKeyAndOrderFront(nil)
+                try? await Task.sleep(for: .milliseconds(300))
                 let send = { (type: NSEvent.EventType, y: CGFloat) in
-                    if let event = NSEvent.mouseEvent(with: type, location: CGPoint(x: edge.midX, y: y), modifierFlags: [], timestamp: 0,
-                                                      windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1) {
-                        window.sendEvent(event)
+                    if let event = NSEvent.mouseEvent(with: type, location: CGPoint(x: edge.midX, y: y), modifierFlags: [],
+                                                      timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                                                      context: nil, eventNumber: 0, clickCount: 1, pressure: type == .leftMouseUp ? 0 : 1) {
+                        NSApplication.shared.postEvent(event, atStart: false)
                     }
                 }
                 // Window coordinates run upward, so dragging down lowers y.
                 send(.leftMouseDown, edge.minY)
+                try? await Task.sleep(for: .milliseconds(40))
                 for step in 1...10 {
                     send(.leftMouseDragged, edge.minY - CGFloat(step) * 10)
                     try? await Task.sleep(for: .milliseconds(40))
@@ -322,6 +372,7 @@ enum DebugSnapshot {
                     "moveDisplay": moveDisplay,
                     "speedPreview": speedReport,
                     "handle": handleReport,
+                    "textEdit": textEditReport,
                     "windowTitle": store.windowTitle,
                     "titleEdit": titleEdit,
                     "fileURL": document?.fileURL?.path ?? "",

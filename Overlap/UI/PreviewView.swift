@@ -19,8 +19,9 @@ struct PreviewView: NSViewRepresentable {
     func updateNSView(_ view: PlayerLayerView, context: Context) {
         view.playerLayer.player = store.playback.player
         view.aspectRatio = aspectRatio
-        view.overlay.state = TransformOverlay.State(project: store.project, selection: store.selection,
-                                                    time: store.playback.currentTime, isCropping: store.isCropping)
+        view.overlay.state = TransformOverlay.State(project: store.project, selection: store.selection, handlesClip: store.handlesClip,
+                                                    time: store.playback.currentTime, isCropping: store.isCropping,
+                                                    editingTitle: store.editingTitleClip)
     }
 }
 
@@ -106,6 +107,9 @@ final class PlayerLayerView: NSView {
         CATransaction.commit()
     }
 
+    /// Presses on the preview belong to it and its handles, never to moving the window.
+    override var mouseDownCanMoveWindow: Bool { false }
+
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
         updateSurround()
@@ -129,7 +133,9 @@ final class PlayerLayerView: NSView {
             playerLayer.frame = CGRect(x: bounds.midX - size.width / 2, y: bounds.midY - size.height / 2, width: size.width, height: size.height)
             stillLayer.frame = playerLayer.bounds
         }
-        overlay.frame = playerLayer.frame
+        // The handles cover the whole preview, so clicks around the canvas reach them too.
+        overlay.frame = bounds
+        overlay.canvasRect = overlay.convert(playerLayer.frame, from: self)
     }
 
     #if DEBUG

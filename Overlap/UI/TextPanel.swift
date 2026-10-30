@@ -1,15 +1,15 @@
 import AppKit
 import SwiftUI
 
-/// The Text tab. With a text clip selected: its words, font, size, weight, color, alignment, backdrop and how it
-/// comes in and goes out. Otherwise, the title styles, to drag onto the timeline or click to add at the playhead.
+/// The Text tab. With a text clip selected: its font, size, weight, color, alignment, backdrop and how it comes in
+/// and goes out; the words themselves are typed on the canvas, by double-clicking the text in the preview. Otherwise, the title styles, to drag onto the timeline or click to add at the playhead.
 struct TextPanel: View {
     let store: ProjectStore
 
     var body: some View {
         if let clip = store.selectedClips.first, let title = clip.title {
             ClipPanel(title: "Text") {
-                TitleEditor(store: store, clipID: clip.id, title: title)
+                TitleEditor(store: store, title: title)
             }
         } else {
             ClipPanel(title: "Text") {
@@ -59,33 +59,12 @@ private struct TitleStyleTile: View {
 /// Every setting of the selected text clip.
 private struct TitleEditor: View {
     let store: ProjectStore
-    let clipID: UUID
     let title: Title
-
-    @State private var text = ""
-    @State private var settle: Task<Void, Never>?
 
     private static let families = NSFontManager.shared.availableFontFamilies
 
     var body: some View {
         PanelGroup(title: "Title") {
-            // Typing shows at once and becomes one undo step after a pause.
-            TextEditor(text: Binding(get: { text }, set: { typed in
-                text = typed
-                store.previewTitle { $0.text = typed }
-                settle?.cancel()
-                settle = Task {
-                    try? await Task.sleep(for: .milliseconds(600))
-                    guard !Task.isCancelled else { return }
-                    store.setTitle("Typing") { $0.text = typed }
-                }
-            }))
-            .font(.system(size: 13))
-            .scrollContentBackground(.hidden)
-            .padding(8)
-            .frame(height: 76)
-            .background(ControlBox())
-
             MenuRow(title: "Font", value: title.fontFamily.isEmpty ? "System" : title.fontFamily) {
                 Toggle("System", isOn: Binding(get: { title.fontFamily.isEmpty }, set: { _ in store.setTitle("Change Font") { $0.fontFamily = "" } }))
                 Divider()
@@ -96,7 +75,9 @@ private struct TitleEditor: View {
             }
             BoxSlider(title: "Size", value: title.size, range: 12...300, format: { "\(Int($0.rounded())) pt" }, defaultValue: 96,
                       onChange: { size in store.previewTitle { $0.size = size } },
-                      onCommit: { size in store.setTitle("Change Size") { $0.size = size } })
+                      onCommit: { size in store.setTitle("Change Size") { $0.size = size } },
+                      // 96 pt is only where a style starts, so the size doesn't catch on it.
+                      detents: [])
             OptionGrid(options: TitleWeight.allCases.map { ($0.name, $0) }, selected: title.weight) { weight in
                 store.setTitle("Change Weight") { $0.weight = weight }
             }
@@ -117,8 +98,6 @@ private struct TitleEditor: View {
                          })
             }
         }
-        .onAppear { text = title.text }
-        .onChange(of: clipID) { text = title.text }
 
         PanelGroup(title: "Comes in") {
             OptionRow(options: TitleAnimation.allCases.map { ($0.name, $0) }, selected: title.animationIn) { animation in
@@ -130,7 +109,7 @@ private struct TitleEditor: View {
                 store.setTitle("Change Animation") { $0.animationOut = animation }
             }
         }
-        ComingLater(text: "Place and size the text by dragging it in the preview, or in the Video tab.")
+        ComingLater(text: "Double-click the text in the preview to change it. Drag it there, or use the Video tab, to place and size it.")
     }
 }
 

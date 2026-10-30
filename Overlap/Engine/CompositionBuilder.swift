@@ -8,6 +8,8 @@ struct BuiltComposition {
     let duration: Time
     /// What the compositor draws, shared with it so visual changes can show without a rebuild. Nil without pictures.
     var plan: RenderPlanBox?
+    /// What the video composition was made from, to make a fresh one that redraws the picture after the plan changes.
+    var videoConfiguration: AVVideoComposition.Configuration?
 }
 
 /// Turns the project model into an AVFoundation composition. Rebuilt after every edit.
@@ -137,6 +139,7 @@ enum CompositionBuilder {
         }
 
         var videoComposition: AVVideoComposition?
+        var videoConfiguration: AVVideoComposition.Configuration?
         var plan: RenderPlanBox?
         if project.hasVisualClips, project.duration > .zero {
             // A blank track under the whole timeline gives the compositor a frame to draw everywhere, gaps included.
@@ -153,10 +156,11 @@ enum CompositionBuilder {
                 canvas: renderSize,
                 background: project.background.flatMap { resolve($0, urls: urls) },
                 frame: project.frame,
-                layers: layers
+                layers: layers,
+                hiddenClip: nil
             ))
             edges.insert(Time(composition.duration))
-            videoComposition = AVVideoComposition(configuration: .init(
+            let configuration = AVVideoComposition.Configuration(
                 colorPrimaries: AVVideoColorPrimaries_ITU_R_709_2,
                 colorTransferFunction: AVVideoTransferFunction_ITU_R_709_2,
                 colorYCbCrMatrix: AVVideoYCbCrMatrix_ITU_R_709_2,
@@ -164,7 +168,9 @@ enum CompositionBuilder {
                 frameDuration: frameDuration(for: canvas.frameRate),
                 instructions: instructions(edges: edges, until: Time(composition.duration), layers: layers, baseTrack: base.trackID, plan: box),
                 renderSize: renderSize
-            ))
+            )
+            videoComposition = AVVideoComposition(configuration: configuration)
+            videoConfiguration = configuration
             plan = box
         }
 
@@ -180,7 +186,8 @@ enum CompositionBuilder {
             videoComposition: videoComposition,
             audioMix: audioMix,
             duration: Time(composition.duration),
-            plan: plan
+            plan: plan,
+            videoConfiguration: videoConfiguration
         )
     }
 

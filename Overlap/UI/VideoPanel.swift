@@ -30,11 +30,12 @@ struct VideoPanel: View {
                 // Scale works in powers of two, so 50% and 200% sit the same distance either side of 100%.
                 slider("Scale", log2(visual.scale), range: log2(Visual.scaleRange.lowerBound)...log2(Visual.scaleRange.upperBound),
                        default: 0, format: { "\(Int((exp2($0) * 100).rounded()))%" }) { $0.scale = exp2($1) }
-                slider("Rotation", visual.rotation, range: -180...180, default: 0, format: { "\(Int($0.rounded()))°" }) { $0.rotation = $1 }
+                slider("Rotation", visual.rotation, range: -180...180, default: 0, detents: [-90, 0, 90],
+                       format: { "\(Int($0.rounded()))°" }) { $0.rotation = $1 }
                 // Text has no edges to crop.
                 if clip.title == nil {
                     HStack(spacing: 6) {
-                        Button(store.isCropping ? "Done Cropping" : "Crop") { store.isCropping.toggle() }
+                        Button(store.isCropping ? "Done Cropping" : "Crop") { store.toggleCropping() }
                             .buttonStyle(BoxButtonStyle())
                         if !visual.crop.isEmpty {
                             Button("Reset Crop") { store.setVisual("Reset Crop") { $0.crop = Crop() } }
@@ -83,10 +84,12 @@ struct VideoPanel: View {
 
     /// A slider for one placement or look value. `set` writes the slider's value into the clip's settings.
     private func slider(_ title: String, _ value: Double, range: ClosedRange<Double>, default defaultValue: Double,
-                        format: @escaping (Double) -> String, set: @escaping (inout Visual, Double) -> Void) -> some View {
+                        detents: [Double]? = nil, format: @escaping (Double) -> String,
+                        set: @escaping (inout Visual, Double) -> Void) -> some View {
         BoxSlider(title: title, value: value, range: range, format: format, defaultValue: defaultValue,
                   onChange: { new in store.previewVisual { set(&$0, new) } },
-                  onCommit: { new in store.setVisual("Change \(title)") { set(&$0, new) } })
+                  onCommit: { new in store.setVisual("Change \(title)") { set(&$0, new) } },
+                  detents: detents)
     }
 
     private static let percent: (Double) -> String = { "\(Int(($0 * 100).rounded()))%" }

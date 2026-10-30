@@ -310,3 +310,18 @@ struct DecibelSliderTests {
         }
     }
 }
+
+/// Sliders catch on their detents, such as the default, when dragged near them.
+struct SliderDetentTests {
+    @Test func catchesTheNearestDetentWithinReach() {
+        #expect(BoxSlider.detent(for: 0.02, among: [0], reach: 0.05) == 0)
+        #expect(BoxSlider.detent(for: -0.04, among: [0], reach: 0.05) == 0)
+        #expect(BoxSlider.detent(for: 88, among: [-90, 0, 90], reach: 3) == 90)
+    }
+
+    @Test func letsGoOutsideReach() {
+        #expect(BoxSlider.detent(for: 0.06, among: [0], reach: 0.05) == nil)
+        #expect(BoxSlider.detent(for: 45, among: [-90, 0, 90], reach: 3) == nil)
+        #expect(BoxSlider.detent(for: 0.5, among: [], reach: 1) == nil)
+    }
+}

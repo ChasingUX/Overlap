@@ -274,7 +274,8 @@ struct BoxButtonStyle: ButtonStyle {
 /// sits in the middle; the handle fades out as it passes under the value rather than cross the number.
 /// The fill can end short of the label, which reads over the track. Dragging on the fill changes the value by
 /// how far the pointer moves; a click past the handle jumps there first. Double-click resets it. A drag is one
-/// change, on release.
+/// change, on release. Dragging past a detent, such as the default, catches on it, with a tap on a Force Touch
+/// trackpad; holding ⌘ drags past freely.
 struct BoxSlider: View {
     let title: String
     let value: Double
@@ -287,14 +288,32 @@ struct BoxSlider: View {
     let onCommit: (Double) -> Void
     /// Called on every release, changed or not, after `onCommit`.
     var onEnd: (() -> Void)?
+    /// Values the slider catches on. Nil puts one at the default when it's inside the range; a default at an end
+    /// needs none, since a drag stops there anyway.
+    var detents: [Double]?
 
     @State private var draft: Double?
     @State private var dragStart: Double?
     @State private var valueWidth: CGFloat = 0
+    /// The detent the value is resting on during a drag, so the tap plays once, as it catches.
+    @State private var caught: Double?
 
     private static let tickCount = 7
+    /// How near, in screen points, a drag has to come to a detent to catch on it.
+    private static let detentReach: CGFloat = 5
     private var span: Double { range.upperBound - range.lowerBound }
     private var shown: Double { draft ?? value.clamped(to: range) }
+
+    private var stops: [Double] {
+        if let detents { return detents }
+        guard let defaultValue, range.lowerBound < defaultValue, defaultValue < range.upperBound else { return [] }
+        return [defaultValue]
+    }
+
+    /// The detent a value catches on: the nearest within `reach`, in the slider's own units.
+    nonisolated static func detent(for value: Double, among stops: [Double], reach: Double) -> Double? {
+        stops.filter { abs($0 - value) <= reach }.min { abs($0 - value) < abs($1 - value) }
+    }
 
     var body: some View {
         GeometryReader { geometry in
@@ -312,6 +331,15 @@ struct BoxSlider: View {
                         Capsule()
                             .fill(Color(nsColor: Theme.controlTick))
                             .frame(width: 1.5, height: 9)
+                            .offset(x: x)
+                    }
+                }
+                ForEach(stops, id: \.self) { stop in
+                    let x = minimum + CGFloat((stop - range.lowerBound) / span) * track
+                    if x > fill + 6, x < valueStart {
+                        Capsule()
+                            .fill(Color(nsColor: Theme.controlDetent))
+                            .frame(width: 1.5, height: 12)
                             .offset(x: x)
                     }
                 }
@@ -345,8 +373,21 @@ struct BoxSlider: View {
                         guard x > fill + 4 else { return shown }
                         return (range.lowerBound + Double((x - minimum) / track) * span).clamped(to: range)
                     }()
+                    if dragStart == nil {
+                        // Starting on a detent doesn't tap.
+                        caught = stops.first { $0 == shown }
+                    }
                     dragStart = start
-                    let next = (start + Double(drag.translation.width / track) * span).clamped(to: range)
+                    var next = (start + Double(drag.translation.width / track) * span).clamped(to: range)
+                    let stop = NSEvent.modifierFlags.contains(.command) ? nil
+                        : Self.detent(for: next, among: stops, reach: Double(Self.detentReach / track) * span)
+                    if let stop {
+                        next = stop
+                        if caught != stop {
+                            NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+                        }
+                    }
+                    caught = stop
                     if next != shown {
                         draft = next
                         onChange?(next)
@@ -356,6 +397,7 @@ struct BoxSlider: View {
                     if let draft, draft != value { onCommit(draft) }
                     draft = nil
                     dragStart = nil
+                    caught = nil
                     onEnd?()
                 })
             .simultaneousGesture(TapGesture(count: 2).onEnded {

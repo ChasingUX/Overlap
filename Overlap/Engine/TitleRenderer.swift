@@ -63,3 +63,25 @@ enum TitleRenderer {
         return NSFont(descriptor: descriptor, size: size) ?? .systemFont(ofSize: size, weight: weight)
     }
 }
+
+extension TitleRenderer {
+    /// A small picture of the canvas with the text where it sits, at its scale, rotation and opacity, over a dark
+    /// frame: what a text clip shows on the timeline, as frames do for video. `height` is in pixels.
+    static func frame(for title: Title, visual: Visual, canvas: CGSize, height: Int) -> CGImage? {
+        let scale = CGFloat(height) / canvas.height
+        let size = CGSize(width: max(1, (canvas.width * scale).rounded()), height: CGFloat(height))
+        guard let context = CGContext(data: nil, width: Int(size.width), height: height, bitsPerComponent: 8, bytesPerRow: 0,
+                                      space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        context.setFillColor(CGColor(srgbRed: 0.08, green: 0.08, blue: 0.09, alpha: 1))
+        context.fill(CGRect(origin: .zero, size: size))
+        guard let text = image(for: title, canvas: size) else { return context.makeImage() }
+        let drawn = CGSize(width: CGFloat(text.width) * visual.scale, height: CGFloat(text.height) * visual.scale)
+        // The canvas's y runs down; the bitmap's runs up.
+        context.translateBy(x: size.width / 2 + visual.x * size.width, y: size.height / 2 - visual.y * size.height)
+        context.rotate(by: -visual.rotation * .pi / 180)
+        context.setAlpha(visual.opacity)
+        context.draw(text, in: CGRect(x: -drawn.width / 2, y: -drawn.height / 2, width: drawn.width, height: drawn.height))
+        return context.makeImage()
+    }
+}

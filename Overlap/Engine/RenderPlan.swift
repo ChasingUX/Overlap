@@ -57,6 +57,8 @@ struct RenderPlan: Sendable {
     var background: ResolvedFill?
     var frame: PictureFrame
     var layers: [RenderLayer]
+    /// A clip left out of the picture for now: text being typed into on the canvas, which the editor draws instead.
+    var hiddenClip: UUID?
 
     /// Takes on the project's look without moving anything in time: the background and frame, and each layer's
     /// placement, text and fill. The canvas size and the clips' timing need a rebuild.

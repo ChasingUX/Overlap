@@ -1,6 +1,7 @@
 import AVFoundation
 import CoreImage
 import ImageIO
+import Synchronization
 
 /// Draws a frame from a render plan with Core Image: the background, every picture layer from the bottom track
 /// up, then the whole-picture frame. Used by the compositor during playback and export, and directly by tests.
@@ -36,7 +37,7 @@ final class FrameRenderer: @unchecked Sendable {
 
         // The picture: each track's clips, bottom track first.
         var picture = clear
-        let active = plan.layers.filter { !$0.isBackground && $0.isActive(at: time) }
+        let active = plan.layers.filter { !$0.isBackground && $0.isActive(at: time) && $0.clipID != plan.hiddenClip }
         for track in Set(active.map(\.track)).sorted() {
             let onTrack = active.filter { $0.track == track }.sorted { $0.start < $1.start }
             if let image = blend(onTrack, at: time, render: { self.picture(of: $0, at: time, in: canvas, sourceFrame: sourceFrame) }) {
@@ -298,11 +299,15 @@ final class FrameRenderer: @unchecked Sendable {
 
 /// The custom compositor AVFoundation runs for every frame of playback and export.
 final class Compositor: NSObject, AVVideoCompositing, @unchecked Sendable {
-    private let renderer = FrameRenderer()
-    private let context = CIContext(options: [
+    // Shared by every compositor: a new one starts each time the picture is redrawn after a live change, and the
+    // decoded images, drawn text and Core Image context should carry over.
+    private static let renderer = FrameRenderer()
+    private static let context = CIContext(options: [
         .workingColorSpace: CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!,
         .cacheIntermediates: false,
     ])
+    private var renderer: FrameRenderer { Self.renderer }
+    private var context: CIContext { Self.context }
     private static let outputColorSpace = CGColorSpace(name: CGColorSpace.itur_709)!
 
     let sourcePixelBufferAttributes: [String: any Sendable]? = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
@@ -310,7 +315,15 @@ final class Compositor: NSObject, AVVideoCompositing, @unchecked Sendable {
 
     func renderContextChanged(_ newRenderContext: AVVideoCompositionRenderContext) {}
 
+    #if DEBUG
+    /// Frames drawn since launch, for debug checks that the picture redraws when it should.
+    static let renders = Atomic<Int>(0)
+    #endif
+
     func startRequest(_ request: AVAsynchronousVideoCompositionRequest) {
+        #if DEBUG
+        Self.renders.add(1, ordering: .relaxed)
+        #endif
         guard let instruction = request.videoCompositionInstruction as? CompositionInstruction,
               let output = request.renderContext.newPixelBuffer() else {
             request.finish(with: CocoaError(.featureUnsupported))

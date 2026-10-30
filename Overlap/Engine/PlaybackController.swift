@@ -53,16 +53,19 @@ final class PlaybackController {
 
     /// What the current composition's compositor draws, for showing look changes without a rebuild.
     @ObservationIgnored private(set) var plan: RenderPlanBox?
+    @ObservationIgnored private var videoConfiguration: AVVideoComposition.Configuration?
 
-    /// Draws the frame at the playhead again after the plan changes. While playing, the next frame shows it anyway.
+    /// Draws the frame at the playhead again after the plan changes. Seeking to the same time doesn't redraw, but a
+    /// fresh video composition does. While playing, the next frame shows the change anyway.
     func redrawPicture() {
-        guard !isPlaying, player.currentItem != nil else { return }
-        player.seek(to: currentTime.cmTime, toleranceBefore: .zero, toleranceAfter: .zero)
+        guard !isPlaying, let item = player.currentItem, let videoConfiguration else { return }
+        item.videoComposition = AVVideoComposition(configuration: videoConfiguration)
     }
 
     /// Swaps in a rebuilt composition, keeping the playhead and play state.
     func install(_ built: BuiltComposition) {
         plan = built.plan
+        videoConfiguration = built.videoConfiguration
         let item = AVPlayerItem(asset: built.composition)
         item.videoComposition = built.videoComposition
         item.audioMix = built.audioMix

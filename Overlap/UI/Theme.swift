@@ -45,6 +45,8 @@ enum Theme {
     static let controlFill = dynamic(light: NSColor(white: 0.88, alpha: 1), dark: gray(0x2B))
     static let controlChosen = dynamic(light: NSColor(white: 0.84, alpha: 1), dark: gray(0x35))
     static let controlTick = dynamic(light: NSColor(white: 0, alpha: 0.15), dark: NSColor(white: 1, alpha: 0.13))
+    /// A slider's detent, such as its default, a step brighter than the other ticks.
+    static let controlDetent = dynamic(light: NSColor(white: 0, alpha: 0.35), dark: NSColor(white: 1, alpha: 0.36))
     static let controlHandle = dynamic(light: NSColor(white: 0, alpha: 0.45), dark: NSColor(white: 1, alpha: 0.5))
     /// Native sliders are tinted gray instead of the accent blue.
     static let sliderTint = dynamic(light: NSColor(white: 0.45, alpha: 1), dark: NSColor(white: 0.78, alpha: 1))
