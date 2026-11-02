@@ -7,6 +7,8 @@ struct PreviewView: NSViewRepresentable {
     let store: ProjectStore
     /// The canvas's width over its height. The frame keeps this shape; 16:9 until there's a canvas.
     let aspectRatio: CGFloat?
+    /// The still shown in place of the player while nothing on the timeline has a picture.
+    var stage: CGImage?
 
     func makeNSView(context: Context) -> PlayerLayerView {
         let view = PlayerLayerView(player: store.playback.player, store: store)
@@ -19,6 +21,7 @@ struct PreviewView: NSViewRepresentable {
     func updateNSView(_ view: PlayerLayerView, context: Context) {
         view.playerLayer.player = store.playback.player
         view.aspectRatio = aspectRatio
+        view.setStage(stage)
         view.overlay.state = TransformOverlay.State(project: store.project, selection: store.selection, handlesClip: store.handlesClip,
                                                     time: store.playback.currentTime, isCropping: store.isCropping,
                                                     editingTitle: store.editingTitleClip)
@@ -39,6 +42,8 @@ final class PlayerLayerView: NSView {
     /// Every edit swaps in a rebuilt composition, and the player shows nothing until the new one's first frame
     /// is decoded. The frame on screen before the swap stays up, over the video, until then.
     private let stillLayer = CALayer()
+    /// The empty canvas, over the player, while there's no picture to play.
+    private let stageLayer = CALayer()
     /// The canvas's faint edge, over the picture and under the handles.
     private let outlineLayer = CALayer()
     private var still: CVPixelBuffer?
@@ -59,6 +64,9 @@ final class PlayerLayerView: NSView {
         stillLayer.contentsGravity = .resizeAspect
         stillLayer.isHidden = true
         playerLayer.addSublayer(stillLayer)
+        stageLayer.contentsGravity = .resizeAspect
+        stageLayer.isHidden = true
+        playerLayer.addSublayer(stageLayer)
         outlineLayer.borderColor = Theme.canvasOutline.cgColor
         outlineLayer.cornerRadius = Self.cornerRadius
         outlineLayer.cornerCurve = .continuous
@@ -73,6 +81,14 @@ final class PlayerLayerView: NSView {
     @available(*, unavailable)
     required init?(coder: NSCoder) {
         fatalError("init(coder:) is not supported")
+    }
+
+    func setStage(_ image: CGImage?) {
+        guard stageLayer.contents as! CGImage? !== image else { return }
+        withoutAnimation {
+            stageLayer.contents = image
+            stageLayer.isHidden = image == nil
+        }
     }
 
     func swapDidBegin() {
@@ -138,6 +154,7 @@ final class PlayerLayerView: NSView {
         withoutAnimation {
             playerLayer.frame = CGRect(x: bounds.midX - size.width / 2, y: bounds.midY - size.height / 2, width: size.width, height: size.height)
             stillLayer.frame = playerLayer.bounds
+            stageLayer.frame = playerLayer.bounds
             outlineLayer.frame = playerLayer.frame
             // One pixel on any screen.
             outlineLayer.borderWidth = 1 / (window?.backingScaleFactor ?? 2)

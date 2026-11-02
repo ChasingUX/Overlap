@@ -26,9 +26,10 @@ enum WallpaperLibrary {
         return (try? JSONDecoder().decode([RGBA].self, from: data)) ?? []
     }
 
-    /// Remembers a custom color first in the list, keeping the eight most recent.
-    static func remember(_ color: RGBA) {
-        var colors = customColors.filter { $0 != color }
+    /// Remembers a custom color first in the list, keeping the eight most recent. `earlier` is one remembered
+    /// moments before while the same color was being picked, so adjusting it keeps one swatch, not one per pause.
+    static func remember(_ color: RGBA, replacing earlier: RGBA? = nil) {
+        var colors = customColors.filter { $0 != color && $0 != earlier }
         colors.insert(color, at: 0)
         if let data = try? JSONEncoder().encode(Array(colors.prefix(8))) {
             UserDefaults.standard.set(data, forKey: colorsKey)

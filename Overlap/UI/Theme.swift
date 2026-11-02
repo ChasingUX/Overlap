@@ -59,11 +59,6 @@ enum Theme {
     }
 }
 
-/// The one animation for layout changes, like the switch between a project with a preview and one without.
-enum Motion {
-    static let layout = Animation.smooth(duration: 0.35)
-}
-
 extension NSColor {
     /// Resolves a dynamic color for an appearance, for places that need a `CGColor`.
     func cgColor(for appearance: NSAppearance) -> CGColor {

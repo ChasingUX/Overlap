@@ -10,7 +10,7 @@ struct ExportSheet: View {
     @State private var isConfirmingReplace = false
 
     private var format: ExportSettings.Format { store.exportFormat }
-    private var hasPicture: Bool { store.project.hasVisualClips }
+    private var hasPicture: Bool { store.project.hasPicture }
     private var trimmedName: String { name.trimmingCharacters(in: .whitespacesAndNewlines) }
     private var fileName: String { "\(trimmedName).\(format.fileExtension)" }
     private var destination: URL { store.exportFolder.appending(path: fileName) }
@@ -52,7 +52,7 @@ struct ExportSheet: View {
                 store.exportSettings.isAudioOnly = true
             }
             if !hasPicture {
-                PanelNote(text: "Nothing on the timeline has a picture, so it exports as sound.")
+                PanelNote(text: "There's no picture or background, so it exports as sound.")
             }
         }
 

@@ -148,6 +148,12 @@ struct Project: Equatable, Sendable, Codable {
         }
     }
 
+    /// Whether the project makes a picture: anything visual on the timeline, or a background, which can stand on
+    /// its own behind sound.
+    var hasPicture: Bool {
+        hasVisualClips || background != nil
+    }
+
     /// Whether a clip draws in the preview: a video whose picture hasn't been split off, an image, text or a background.
     func showsPicture(_ clip: Clip) -> Bool {
         if clip.title != nil || clip.fill != nil { return true }

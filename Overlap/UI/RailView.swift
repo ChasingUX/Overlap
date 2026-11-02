@@ -7,7 +7,7 @@ struct RailView: View {
     @State private var hoveredTab: PanelTab?
 
     var body: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 12) {
             ForEach(PanelTab.allCases.filter { $0 != .transitions }) { tab in
                 button(for: tab)
             }
@@ -25,8 +25,9 @@ struct RailView: View {
     private func button(for tab: PanelTab) -> some View {
         let isActive = store.isPanelVisible && store.activeTab == tab
         let applies = store.applicableTabs.contains(tab)
-        // The chosen tab fills with the accent color; others show a soft gray tile on hover.
-        let fill = isActive ? Color.accentColor : (hoveredTab == tab ? Color.primary.opacity(0.1) : Color.clear)
+        // The chosen tab fills with the accent color; others show a soft gray tile on hover, and their icon brightens.
+        let isHovered = hoveredTab == tab
+        let fill = isActive ? Color.accentColor : (isHovered ? Color.primary.opacity(0.1) : Color.clear)
         return Button {
             store.activeTab = tab
             store.isPanelVisible = true
@@ -34,7 +35,7 @@ struct RailView: View {
             tab.icon.image
                 .font(.system(size: 16))
                 .frame(width: 30, height: 30)
-                .foregroundStyle(isActive ? Color.white : Color.secondary)
+                .foregroundStyle(isActive ? Color.white : (isHovered ? Color.primary.opacity(0.85) : Color.secondary))
                 .background(RoundedRectangle(cornerRadius: 7).fill(fill))
                 .overlay(alignment: .topTrailing) {
                     if applies {

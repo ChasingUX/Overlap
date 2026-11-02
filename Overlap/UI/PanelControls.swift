@@ -170,6 +170,136 @@ struct MenuRow<Items: View>: View {
     }
 }
 
+/// A label and a pop-up menu drawn by AppKit itself, for menus whose items need a picture and a detail beside the
+/// title, which SwiftUI's menus can't show. It opens over the control with the chosen item lined up on it, as a
+/// pop-up button's does, and keeps everything a native menu has: arrow keys, typing to jump, VoiceOver.
+struct PopUpRow: View {
+    struct Item {
+        var title: String
+        /// Shown at the item's right edge.
+        var detail: String?
+        /// Shown on a second line under the title.
+        var subtitle: String?
+        var image: NSImage?
+        var isChosen = false
+        /// Starts a new group, with a line above it.
+        var startsGroup = false
+        var action: () -> Void
+    }
+
+    let title: String
+    let value: String
+    var icon: NSImage?
+    let items: () -> [Item]
+
+    @State private var anchor = PopUpAnchor()
+
+    var body: some View {
+        ControlRow(title: title) {
+            Button {
+                anchor.popUp(items())
+            } label: {
+                HStack(spacing: 6) {
+                    if let icon {
+                        Image(nsImage: icon)
+                            .renderingMode(.template)
+                            .foregroundStyle(.secondary)
+                    }
+                    Text(value)
+                        .lineLimit(1)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 10)
+                .frame(height: PanelMetrics.boxHeight - PanelMetrics.pillInset * 2)
+                .background(ChosenPill())
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .background(PopUpAnchorView(anchor: anchor))
+            .fixedSize()
+            .accessibilityLabel(title)
+            .accessibilityValue(value)
+        }
+    }
+}
+
+/// Where a `PopUpRow`'s menu opens from: an empty AppKit view behind its pill.
+@MainActor
+final class PopUpAnchor {
+    fileprivate weak var view: NSView?
+
+    #if DEBUG
+    /// Told about each menu as it opens, for debug checks that look at it.
+    static var debugOnOpen: ((NSMenu) -> Void)?
+    #endif
+
+    func popUp(_ items: [PopUpRow.Item]) {
+        guard let view else { return }
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        // The menu holds its items only weakly to their targets, so the actions are kept here while it's open.
+        var actions: [MenuAction] = []
+        var chosen: NSMenuItem?
+        for item in items {
+            if item.startsGroup, !menu.items.isEmpty { menu.addItem(.separator()) }
+            let action = MenuAction(item.action)
+            actions.append(action)
+            let menuItem = NSMenuItem(title: item.title, action: #selector(MenuAction.choose), keyEquivalent: "")
+            menuItem.target = action
+            menuItem.image = item.image
+            // macOS 27 hides menu pictures unless an item asks for its own; here the picture is the point.
+            menuItem.preferredImageVisibility = .visible
+            menuItem.subtitle = item.subtitle
+            if let detail = item.detail { menuItem.badge = NSMenuItemBadge(string: detail) }
+            menuItem.state = item.isChosen ? NSControl.StateValue.on : .off
+            if item.isChosen { chosen = menuItem }
+            menu.addItem(menuItem)
+        }
+        #if DEBUG
+        if let debugOnOpen = Self.debugOnOpen {
+            // The menu runs its own event loop while open; a timer in the common modes still fires inside it.
+            nonisolated(unsafe) let open = (debugOnOpen, menu)
+            let timer = Timer(timeInterval: 0.4, repeats: false) { _ in MainActor.assumeIsolated { open.0(open.1) } }
+            RunLoop.main.add(timer, forMode: .common)
+        }
+        #endif
+        // The chosen item opens right over the pill, the way a pop-up button's does.
+        menu.popUp(positioning: chosen, at: NSPoint(x: 0, y: view.bounds.height - 1), in: view)
+        withExtendedLifetime(actions) {}
+    }
+}
+
+private final class MenuAction: NSObject {
+    private let run: () -> Void
+
+    init(_ run: @escaping () -> Void) {
+        self.run = run
+    }
+
+    @objc func choose() {
+        run()
+    }
+}
+
+/// The empty view a `PopUpRow`'s menu opens from.
+final class PopUpAnchorNSView: NSView {}
+
+private struct PopUpAnchorView: NSViewRepresentable {
+    let anchor: PopUpAnchor
+
+    func makeNSView(context: Context) -> NSView {
+        let view = PopUpAnchorNSView()
+        anchor.view = view
+        return view
+    }
+
+    func updateNSView(_ view: NSView, context: Context) {
+        anchor.view = view
+    }
+}
+
 /// A label and a color well. The color panel sends changes as it's dragged; they show at once through
 /// `onChange`, and `onCommit` follows once the color has settled, as one undo step.
 struct ColorRow: View {
@@ -194,6 +324,111 @@ struct ColorRow: View {
             }), supportsOpacity: false)
             .labelsHidden()
             .padding(.trailing, PanelMetrics.insidePadding - PanelMetrics.pillInset - 2)
+        }
+    }
+}
+
+/// A swatch with a +, for a color of your own: it opens the system color panel, shows each change as it's
+/// made, and keeps the color once you stop changing it for a moment. It's a color well underneath, so it takes
+/// turns with the other color controls for the one panel.
+struct AddColorSwatch: NSViewRepresentable {
+    /// Where the panel starts.
+    let color: RGBA
+    let onChange: (RGBA) -> Void
+    /// The color kept, and the one kept earlier while picking this time, which it replaces.
+    let onCommit: (RGBA, _ earlier: RGBA?) -> Void
+
+    func makeNSView(context: Context) -> AddColorWell {
+        AddColorWell()
+    }
+
+    /// As big as the grid's other swatches, not a color well's own size.
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: AddColorWell, context: Context) -> CGSize? {
+        CGSize(width: proposal.width ?? 26, height: proposal.height ?? 26)
+    }
+
+    func updateNSView(_ well: AddColorWell, context: Context) {
+        well.onChange = onChange
+        well.onCommit = onCommit
+        if !well.isActive {
+            well.color = NSColor(srgbRed: color.red, green: color.green, blue: color.blue, alpha: 1)
+        }
+    }
+}
+
+final class AddColorWell: NSColorWell {
+    var onChange: ((RGBA) -> Void)?
+    var onCommit: ((RGBA, RGBA?) -> Void)?
+    private var settle: Task<Void, Never>?
+    /// The color kept since the panel was last opened from here.
+    private var kept: RGBA?
+
+    init() {
+        super.init(frame: .zero)
+        colorWellStyle = .default
+        target = self
+        action = #selector(colorDidChange)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is not supported")
+    }
+
+    override func activate(_ exclusive: Bool) {
+        kept = nil
+        let panel = NSColorPanel.shared
+        panel.showsAlpha = false
+        place(panel)
+        super.activate(exclusive)
+    }
+
+    /// Opens the color panel beside the swatch, just past the edge of the panel it sits in and level with it, so
+    /// it shows up where you're looking rather than wherever it was last.
+    private func place(_ panel: NSColorPanel) {
+        guard let window, let screen = window.screen ?? NSScreen.main else { return }
+        let swatch = window.convertToScreen(convert(bounds, to: nil))
+        let edge = enclosingScrollView.map { window.convertToScreen($0.convert($0.bounds, to: nil)).maxX } ?? swatch.maxX
+        let visible = screen.visibleFrame
+        let size = panel.frame.size
+        let left = min(edge + 12, visible.maxX - size.width)
+        let top = (swatch.maxY + 40).clamped(to: (visible.minY + size.height)...visible.maxY)
+        panel.setFrameTopLeftPoint(NSPoint(x: max(visible.minX, left), y: top))
+    }
+
+    override func deactivate() {
+        super.deactivate()
+        needsDisplay = true
+    }
+
+    @objc private func colorDidChange() {
+        guard let srgb = color.usingColorSpace(.sRGB) else { return }
+        let picked = RGBA(red: srgb.redComponent, green: srgb.greenComponent, blue: srgb.blueComponent)
+        onChange?(picked)
+        settle?.cancel()
+        settle = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(400))
+            guard let self, !Task.isCancelled else { return }
+            onCommit?(picked, kept)
+            kept = picked
+        }
+    }
+
+    /// Drawn as a swatch rather than a well: an empty tile with a +, outlined like a chosen swatch while the panel
+    /// is picking for it.
+    override func draw(_ dirtyRect: NSRect) {
+        let tile = NSBezierPath(roundedRect: bounds.insetBy(dx: isActive ? 1 : 0.5, dy: isActive ? 1 : 0.5), xRadius: 6, yRadius: 6)
+        NSColor.white.withAlphaComponent(0.06).setFill()
+        tile.fill()
+        (isActive ? NSColor.white : NSColor.white.withAlphaComponent(0.12)).setStroke()
+        tile.lineWidth = isActive ? 2 : 1
+        tile.stroke()
+        let symbol = NSImage(systemSymbolName: "plus", accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 11, weight: .medium)
+                .applying(.init(paletteColors: [.secondaryLabelColor])))
+        if let symbol {
+            symbol.draw(in: NSRect(x: bounds.midX - symbol.size.width / 2, y: bounds.midY - symbol.size.height / 2,
+                                   width: symbol.size.width, height: symbol.size.height))
         }
     }
 }

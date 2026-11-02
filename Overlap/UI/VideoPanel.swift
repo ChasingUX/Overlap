@@ -85,9 +85,9 @@ struct VideoPanel: View {
     private func backgroundClip(_ clip: Clip) -> some View {
         ClipPanel(title: "Video") {
             PanelGroup(title: "Background") {
-                BackgroundPicker(store: store, selected: clip.fill, allowsNone: false) { fill in
-                    if let fill { store.setClipFill(fill) }
-                }
+                BackgroundPicker(store: store, selected: clip.fill, allowsNone: false,
+                                 onPreview: { store.previewClipFill($0) },
+                                 onSelect: { fill in if let fill { store.setClipFill(fill) } })
                 slider("Opacity", clip.visual.opacity, range: 0...1, default: 1, format: Self.percent) { $0.opacity = $1 }
             }
         }

@@ -136,7 +136,41 @@ enum CanvasAspect: String, Hashable, Sendable, Codable, CaseIterable {
         }
     }
 
-    /// The canvas size for a fixed shape.
+    /// What the shape is for, as the Canvas tab's menu names it.
+    var title: String {
+        switch self {
+        case .auto: "Auto"
+        case .wide: "Widescreen"
+        case .tall: "Vertical"
+        case .square: "Square"
+        case .portrait: "Portrait"
+        case .standard: "Classic"
+        case .custom: "Custom"
+        }
+    }
+
+    /// Width over height, for the fixed shapes.
+    var ratio: Double? {
+        size.map { Double($0.width) / Double($0.height) }
+    }
+
+    /// The fixed shape a size has, if it has one.
+    static func shape(width: Int, height: Int) -> CanvasAspect? {
+        let ratio = Double(width) / Double(max(height, 1))
+        return allCases.first { $0.ratio.map { abs($0 - ratio) < 0.01 } ?? false }
+    }
+
+    /// A size's shape as a ratio: a standard one's name, such as 16:9, or width to height, such as 2.39:1.
+    static func ratioName(width: Int, height: Int) -> String {
+        if let known = shape(width: width, height: height) {
+            return known.rawValue
+        }
+        let ratio = Double(width) / Double(max(height, 1))
+        let rounded = (ratio * 100).rounded() / 100
+        return "\(rounded.formatted(.number.precision(.fractionLength(0...2)))):1"
+    }
+
+    /// The canvas size for a fixed shape, at 1080 on its shorter side.
     var size: (width: Int, height: Int)? {
         switch self {
         case .wide: (1920, 1080)
@@ -221,10 +255,10 @@ enum TitleStyle: String, CaseIterable, Sendable {
         case .centeredTitle, .boldIntro:
             break
         case .lowerThird:
-            visual.x = -0.28
+            visual.x = -0.38
             visual.y = 0.32
         case .caption:
-            visual.y = 0.38
+            visual.y = 0.33
         }
         return visual
     }

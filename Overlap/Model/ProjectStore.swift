@@ -145,6 +145,7 @@ final class ProjectStore {
         selection = []
         project.assets.forEach(analyze)
         analyzeIsolatedVoices()
+        updateStage()
         playback.setMasterVolume(project.masterVolume)
         rebuildPlayback()
     }
@@ -200,6 +201,7 @@ final class ProjectStore {
     }
 
     private func projectDidChange() {
+        updateStage()
         let clipIDs = Set(project.tracks.flatMap(\.clips).map(\.id))
         selection = selection.intersection(clipIDs)
         // A crossfade that no longer exists closes the Transitions tab.
@@ -245,6 +247,27 @@ final class ProjectStore {
         change(&preview)
         playback.plan?.update { $0.takeLook(from: preview) { self.resolve($0) } }
         playback.redrawPicture()
+        updateStage(for: preview)
+    }
+
+    /// What the preview shows while nothing on the timeline has a picture: the background, as it plays and
+    /// exports, or without one, the bare canvas. Nil once there's a picture to play.
+    private(set) var stageImage: CGImage?
+
+    private func updateStage(for project: Project? = nil) {
+        let project = project ?? self.project
+        guard !project.hasVisualClips else {
+            stageImage = nil
+            return
+        }
+        let canvas = project.canvas ?? Project.defaultCanvas
+        stageImage = Compositor.stage(for: RenderPlan(
+            canvas: CGSize(width: canvas.width, height: canvas.height),
+            background: project.background.flatMap(resolve),
+            frame: project.frame,
+            layers: [],
+            hiddenClip: nil
+        ))
     }
 
     func resolve(_ fill: BackgroundFill) -> ResolvedFill? {
@@ -329,6 +352,17 @@ final class ProjectStore {
     }
 
     /// Gives the selected background clips a new fill.
+    /// Shows a fill on the selected background clips while it's being picked, before it's chosen.
+    func previewClipFill(_ fill: BackgroundFill) {
+        let ids = editableSelection.filter { project.clip($0)?.fill != nil }
+        previewLook { project in
+            for id in ids {
+                guard let location = project.location(ofClip: id) else { continue }
+                project.tracks[location.track].clips[location.clip].fill = fill
+            }
+        }
+    }
+
     func setClipFill(_ fill: BackgroundFill) {
         let ids = editableSelection.filter { project.clip($0)?.fill != nil }
         guard !ids.isEmpty else { return }
@@ -731,9 +765,9 @@ final class ProjectStore {
         return FileManager.default.urls(for: .moviesDirectory, in: .userDomainMask).first ?? FileManager.default.homeDirectoryForCurrentUser
     }
 
-    /// What the next export makes. Without a picture on the timeline, that's sound only.
+    /// What the next export makes. Without a picture or a background, that's sound only.
     var exportFormat: ExportSettings.Format {
-        project.hasVisualClips ? exportSettings.format : exportSettings.audioFormat
+        project.hasPicture ? exportSettings.format : exportSettings.audioFormat
     }
 
     /// Whether there's anything to export, and no export already running.
@@ -758,7 +792,7 @@ final class ProjectStore {
     func export(to destination: URL) {
         guard !isExporting else { return }
         var settings = exportSettings
-        if !project.hasVisualClips { settings.isAudioOnly = true }
+        if !project.hasPicture { settings.isAudioOnly = true }
         let project = project
         exportProgress = Exporter.Progress(stage: project.normalizesLoudness ? .measuring : .writing, fraction: 0)
         exportTask = Task {
@@ -906,12 +940,17 @@ final class ProjectStore {
 
     // MARK: Canvas
 
+    /// A fixed shape keeps the canvas's resolution: its shorter side stays as it was, so a 4K widescreen canvas
+    /// turned vertical is 2160 × 3840.
     func setCanvasAspect(_ aspect: CanvasAspect) {
         apply("Change Canvas Shape") { project in
             project.canvasAspect = aspect
             let rate = project.canvas?.frameRate ?? Project.defaultCanvas.frameRate
             if let size = aspect.size {
-                project.canvas = Canvas(width: size.width, height: size.height, frameRate: rate)
+                let shorter = project.canvas.map { min($0.width, $0.height) } ?? min(size.width, size.height)
+                let scale = Double(shorter) / Double(min(size.width, size.height))
+                project.canvas = Canvas(width: Self.evenSize(Int((Double(size.width) * scale).rounded())),
+                                        height: Self.evenSize(Int((Double(size.height) * scale).rounded())), frameRate: rate)
             } else if aspect == .auto {
                 project.canvas = project.firstVideoCanvas ?? Canvas(width: 1920, height: 1080, frameRate: rate)
             } else if project.canvas == nil {
@@ -920,14 +959,22 @@ final class ProjectStore {
         }
     }
 
-    /// A custom canvas size, kept even and between 16 and 8192 pixels so video encoders accept it.
+    /// A new canvas size. A fixed shape stays chosen, since the Canvas tab keeps its proportions as you type. Auto
+    /// gives way to the shape the size has, or Custom, since the size no longer follows the first video.
     func setCanvasSize(width: Int, height: Int) {
-        func even(_ value: Int) -> Int { min(max(value, 16), 8192) / 2 * 2 }
         apply("Change Canvas Size") { project in
-            project.canvasAspect = .custom
-            project.canvas = Canvas(width: even(width), height: even(height),
-                                    frameRate: project.canvas?.frameRate ?? Project.defaultCanvas.frameRate)
+            let canvas = Canvas(width: Self.evenSize(width), height: Self.evenSize(height),
+                                frameRate: project.canvas?.frameRate ?? Project.defaultCanvas.frameRate)
+            if project.canvasAspect == .auto {
+                project.canvasAspect = CanvasAspect.shape(width: canvas.width, height: canvas.height) ?? .custom
+            }
+            project.canvas = canvas
         }
+    }
+
+    /// Kept even and between 16 and 8192 pixels, so video encoders accept it.
+    private static func evenSize(_ value: Int) -> Int {
+        min(max(value, 16), 8192) / 2 * 2
     }
 
     func setFrameRate(_ rate: Double) {

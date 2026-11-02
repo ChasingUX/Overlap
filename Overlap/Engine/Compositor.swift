@@ -21,9 +21,10 @@ final class FrameRenderer: @unchecked Sendable {
 
     /// The frame at `time`, `plan.canvas` in size with its origin at zero. `sourceFrame` supplies video frames
     /// by composition track.
-    func image(plan: RenderPlan, at time: Double, sourceFrame: (CMPersistentTrackID) -> CIImage?) -> CIImage {
+    func image(plan: RenderPlan, at time: Double, placeholder: CIImage? = nil,
+               sourceFrame: (CMPersistentTrackID) -> CIImage?) -> CIImage {
         let canvas = CGRect(origin: .zero, size: plan.canvas)
-        let clear = CIImage(color: .clear).cropped(to: canvas)
+        let clear = placeholder ?? CIImage(color: .clear).cropped(to: canvas)
 
         // The background: the canvas's, under the background clip playing now on the highest track, if any.
         var background = plan.background.map { fill($0, in: canvas) }
@@ -318,11 +319,14 @@ final class Compositor: NSObject, AVVideoCompositing, @unchecked Sendable {
     #if DEBUG
     /// Frames drawn since launch, for debug checks that the picture redraws when it should.
     static let renders = Atomic<Int>(0)
+    /// The time of the frame drawn last.
+    static let lastRenderedTime = Mutex<Double?>(nil)
     #endif
 
     func startRequest(_ request: AVAsynchronousVideoCompositionRequest) {
         #if DEBUG
         Self.renders.add(1, ordering: .relaxed)
+        Self.lastRenderedTime.withLock { $0 = request.compositionTime.seconds }
         #endif
         guard let instruction = request.videoCompositionInstruction as? CompositionInstruction,
               let output = request.renderContext.newPixelBuffer() else {
@@ -342,4 +346,14 @@ final class Compositor: NSObject, AVVideoCompositing, @unchecked Sendable {
     }
 
     func cancelAllPendingVideoCompositionRequests() {}
+
+    /// The preview's still while nothing on the timeline has a picture: the background on its own, as it exports,
+    /// or without one, a dark placeholder marking the canvas.
+    static func stage(for plan: RenderPlan) -> CGImage? {
+        let canvas = CGRect(origin: .zero, size: plan.canvas)
+        let placeholder = plan.background == nil
+            ? CIImage(color: CIColor(red: 0.075, green: 0.075, blue: 0.085)).cropped(to: canvas) : nil
+        let image = renderer.image(plan: plan, at: 0, placeholder: placeholder) { _ in nil }
+        return context.createCGImage(image, from: canvas, format: .RGBA8, colorSpace: outputColorSpace)
+    }
 }

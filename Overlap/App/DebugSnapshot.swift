@@ -1,6 +1,7 @@
 #if DEBUG
 import AppKit
 import AVFoundation
+import Synchronization
 
 /// Debug-only self-check, used when the app is launched with `OVERLAP_SNAPSHOT=/path/prefix`.
 /// Waits for the first project to load, optionally plays it (`OVERLAP_SNAPSHOT_PLAY=1`), then writes each
@@ -102,6 +103,57 @@ enum DebugSnapshot {
                     }
                 }
                 try? await Task.sleep(for: .milliseconds(500))
+                // OVERLAP_SNAPSHOT_AT=<seconds> also parks the playhead there, for the frame of one style.
+                if let seconds = environment["OVERLAP_SNAPSHOT_AT"].flatMap(Double.init) {
+                    store.playback.seek(to: Time(seconds: seconds))
+                    try? await Task.sleep(for: .milliseconds(500))
+                }
+            }
+
+            // OVERLAP_SNAPSHOT_TITLESEEK=<seconds> adds a Centered Title there, as clicking its tile does, then moves the
+            // playhead before, into and past it (or to OVERLAP_SNAPSHOT_SEEKS=<seconds,…>). After each move it reports the
+            // time the compositor drew, which must be the new playhead's, and when the brightness in the middle of the
+            // shown frame changed, where the title's white text sits. The shown frame only keeps up while the window is
+            // on screen: macOS draws a covered window about once a second.
+            var titleSeekReport: [[String: Any]] = []
+            if let start = environment["OVERLAP_SNAPSHOT_TITLESEEK"].flatMap(Double.init), let store = document?.store,
+               let preview = NSApplication.shared.windows.first(where: \.isVisible)?.contentView.flatMap({ find(PlayerLayerView.self, in: $0) }) {
+                func middleBrightness() -> Double {
+                    guard let buffer = preview.playerLayer.displayedPixelBuffer() else { return -1 }
+                    CVPixelBufferLockBaseAddress(buffer, .readOnly)
+                    defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
+                    guard let base = CVPixelBufferGetBaseAddress(buffer) else { return -1 }
+                    let width = CVPixelBufferGetWidth(buffer), height = CVPixelBufferGetHeight(buffer)
+                    let row = CVPixelBufferGetBytesPerRow(buffer)
+                    var brightest = 0.0
+                    for y in stride(from: height * 2 / 5, to: height * 3 / 5, by: 2) {
+                        for x in stride(from: width * 2 / 5, to: width * 3 / 5, by: 2) {
+                            let pixel = base.advanced(by: y * row + x * 4).assumingMemoryBound(to: UInt8.self)
+                            brightest = max(brightest, Double(pixel[0]) + Double(pixel[1]) + Double(pixel[2]))
+                        }
+                    }
+                    return (brightest / 765 * 100).rounded() / 100
+                }
+                store.playback.seek(to: Time(seconds: start))
+                try? await Task.sleep(for: .milliseconds(500))
+                store.addTitleAtPlayhead(.centeredTitle)
+                try? await Task.sleep(for: .milliseconds(1500))
+                let targets = environment["OVERLAP_SNAPSHOT_SEEKS"]?.split(separator: ",").compactMap { Double($0) }
+                    ?? [start - 1.5, start + 1, start + 2.5, start + 4, start + 6, start + 1.5]
+                for target in targets {
+                    store.playback.seek(to: Time(seconds: max(0, target)))
+                    let moved = Date()
+                    var changes: [[Double]] = []
+                    for _ in 0..<60 {
+                        try? await Task.sleep(for: .milliseconds(20))
+                        let brightness = middleBrightness()
+                        if changes.last?[1] != brightness {
+                            changes.append([(Date().timeIntervalSince(moved) * 1000).rounded(), brightness])
+                        }
+                    }
+                    titleSeekReport.append(["to": target, "ms, brightness": changes,
+                                            "drawn at": Compositor.lastRenderedTime.withLock { $0 } ?? -1])
+                }
             }
 
             // OVERLAP_SNAPSHOT_TEXTEDIT=commit or cancel double-clicks the first text showing, types into it on the
@@ -346,6 +398,67 @@ enum DebugSnapshot {
                 ]
             }
 
+            // OVERLAP_SNAPSHOT_POPUP=1 clicks the first pop-up menu row in the panel, as a person would, then while its
+            // menu is open records its items and captures it as <prefix>-popup.png before closing it.
+            var popUpReport: [[String: Any]] = []
+            if environment["OVERLAP_SNAPSHOT_POPUP"] != nil, let store = document?.store,
+               let window = NSApplication.shared.windows.first(where: \.isVisible), let content = window.contentView {
+                if let tab = environment["OVERLAP_SNAPSHOT_PANEL"].flatMap({ name in PanelTab.allCases.first { $0.title.lowercased() == name } }) {
+                    store.select([])
+                    store.activeTab = tab
+                    try? await Task.sleep(for: .milliseconds(400))
+                }
+                if let anchor = find(PopUpAnchorNSView.self, in: content) {
+                    PopUpAnchor.debugOnOpen = { menu in
+                        popUpReport = menu.items.map { item in
+                            item.isSeparatorItem ? ["separator": true] : [
+                                "title": item.title, "subtitle": item.subtitle ?? "", "detail": item.badge?.stringValue ?? "",
+                                "image": item.image != nil, "chosen": item.state == .on,
+                            ]
+                        }
+                        // Every image view in the open menu: what it shows and whether it's visible.
+                        func images(in view: NSView) -> [String] {
+                            var found: [String] = []
+                            if let imageView = view as? NSImageView, let image = imageView.image {
+                                let frame = imageView.convert(imageView.bounds, to: nil)
+                                found.append(String(format: "%.0fx%.0f at %.0f,%.0f hidden=%@ alpha=%.2f", image.size.width, image.size.height,
+                                                    frame.minX, frame.minY, imageView.isHiddenOrHasHiddenAncestor ? "yes" : "no", imageView.alphaValue))
+                            }
+                            return found + view.subviews.flatMap(images)
+                        }
+                        let menuWindows = NSApplication.shared.windows.filter { $0.isVisible && $0 !== window }
+                        popUpReport.append(["imageViews": menuWindows.flatMap { $0.contentView.map(images) ?? [] }])
+                        for menuWindow in NSApplication.shared.windows where menuWindow.isVisible && menuWindow !== window {
+                            guard let view = menuWindow.contentView?.superview ?? menuWindow.contentView,
+                                  let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { continue }
+                            view.cacheDisplay(in: view.bounds, to: bitmap)
+                            try? bitmap.representation(using: .png, properties: [:])?.write(to: URL(filePath: "\(prefix)-popup.png"))
+                        }
+                        // OVERLAP_SNAPSHOT_POPUP=<title> also chooses that item, as clicking it would.
+                        if let title = environment["OVERLAP_SNAPSHOT_POPUP"], let index = menu.items.firstIndex(where: { $0.title == title }) {
+                            menu.performActionForItem(at: index)
+                        }
+                        menu.cancelTracking()
+                    }
+                    NSApplication.shared.activate(ignoringOtherApps: true)
+                    window.makeKeyAndOrderFront(nil)
+                    try? await Task.sleep(for: .milliseconds(300))
+                    let point = anchor.convert(CGPoint(x: anchor.bounds.midX, y: anchor.bounds.midY), to: nil)
+                    for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                        if let event = NSEvent.mouseEvent(with: type, location: point, modifierFlags: [],
+                                                          timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                                                          context: nil, eventNumber: 0, clickCount: 1, pressure: type == .leftMouseUp ? 0 : 1) {
+                            NSApplication.shared.postEvent(event, atStart: false)
+                        }
+                        try? await Task.sleep(for: .milliseconds(60))
+                    }
+                    try? await Task.sleep(for: .milliseconds(1200))
+                    PopUpAnchor.debugOnOpen = nil
+                    popUpReport.append(["firstResponder": String(describing: type(of: window.firstResponder as Any)),
+                                        "canvasAspect": store.project.canvasAspect.rawValue])
+                }
+            }
+
             // OVERLAP_SNAPSHOT_PANEL=<tab> opens any tab with nothing selected, for its empty state.
             if let tab = environment["OVERLAP_SNAPSHOT_PANEL"].flatMap({ name in PanelTab.allCases.first { $0.title.lowercased() == name } }),
                let store = document?.store {
@@ -353,6 +466,82 @@ enum DebugSnapshot {
                 store.selectTransition(nil)
                 store.activeTab = tab
                 try? await Task.sleep(for: .milliseconds(300))
+            }
+            // OVERLAP_SNAPSHOT_PIXELS=<width>|<height>|<aspect> picks the shape, then types each number given into
+            // the Pixels row's field for it and leaves the field, as Tab would. Either may be empty.
+            var pixelsReport: [String: Any] = [:]
+            if let typed = environment["OVERLAP_SNAPSHOT_PIXELS"]?.split(separator: "|", omittingEmptySubsequences: false).map(String.init),
+               typed.count == 3, let store = document?.store, let window = NSApplication.shared.windows.first(where: \.isVisible),
+               let content = window.contentView {
+                if let aspect = CanvasAspect(rawValue: typed[2]) { store.setCanvasAspect(aspect) }
+                store.activeTab = .canvas
+                try? await Task.sleep(for: .milliseconds(300))
+                func fields(in view: NSView) -> [NSTextField] {
+                    (view as? NSTextField).map { [$0] } ?? view.subviews.flatMap(fields)
+                }
+                for (index, number) in typed.prefix(2).enumerated() where !number.isEmpty {
+                    let current = index == 0 ? store.project.canvas?.width : store.project.canvas?.height
+                    guard let field = fields(in: content).first(where: { $0.isEditable && $0.stringValue == current.map(String.init) }) else { continue }
+                    window.makeFirstResponder(field)
+                    try? await Task.sleep(for: .milliseconds(100))
+                    field.currentEditor()?.selectAll(nil)
+                    field.currentEditor()?.insertText(number)
+                    try? await Task.sleep(for: .milliseconds(100))
+                    window.makeFirstResponder(nil)
+                    try? await Task.sleep(for: .milliseconds(300))
+                }
+                pixelsReport = ["canvas": store.project.canvas.map { [$0.width, $0.height] } ?? [],
+                                "aspect": store.project.canvasAspect.rawValue,
+                                "fields": fields(in: content).filter(\.isEditable).map(\.stringValue)]
+            }
+            // OVERLAP_SNAPSHOT_ADDCOLOR=<hex> clicks the Canvas tab's + swatch, picks that color in the color panel and
+            // reports what was kept. The saved custom colors are put back as they were afterward.
+            var addColorReport: [String: Any] = [:]
+            if let hex = environment["OVERLAP_SNAPSHOT_ADDCOLOR"].flatMap({ Int($0, radix: 16) }), let store = document?.store,
+               let window = NSApplication.shared.windows.first(where: \.isVisible), let content = window.contentView {
+                store.activeTab = .canvas
+                try? await Task.sleep(for: .milliseconds(300))
+                let saved = UserDefaults.standard.data(forKey: "customBackgroundColors")
+                if let well = find(AddColorWell.self, in: content) {
+                    NSApplication.shared.activate(ignoringOtherApps: true)
+                    window.makeKeyAndOrderFront(nil)
+                    let point = well.convert(CGPoint(x: well.bounds.midX, y: well.bounds.midY), to: nil)
+                    for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                        if let event = NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                                          windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1) {
+                            NSApplication.shared.postEvent(event, atStart: false)
+                        }
+                        try? await Task.sleep(for: .milliseconds(80))
+                    }
+                    try? await Task.sleep(for: .milliseconds(400))
+                    addColorReport["wellActive"] = well.isActive
+                    addColorReport["panelVisible"] = NSColorPanel.shared.isVisible
+                    // Where the panel opened against the swatch, in screen points: its frame, then the swatch's.
+                    let swatch = window.convertToScreen(well.convert(well.bounds, to: nil))
+                    addColorReport["panelFrame"] = [NSColorPanel.shared.frame.minX, NSColorPanel.shared.frame.maxY,
+                                                    NSColorPanel.shared.frame.width, NSColorPanel.shared.frame.height].map { Double($0.rounded()) }
+                    addColorReport["swatchFrame"] = [swatch.minX, swatch.maxY, swatch.width, swatch.height].map { Double($0.rounded()) }
+                    addColorReport["scrollEdge"] = well.enclosingScrollView.map { Double(window.convertToScreen($0.convert($0.bounds, to: nil)).maxX) } ?? -1
+                    addColorReport["windowFrame"] = [window.frame.minX, window.frame.maxY, window.frame.width].map { Double($0.rounded()) }
+                    // Two picks in a row, as a drag through the panel would make, then a pause.
+                    for step in [0.5, 1.0] {
+                        let color = NSColor(srgbRed: CGFloat((hex >> 16) & 0xFF) / 255 * step, green: CGFloat((hex >> 8) & 0xFF) / 255 * step,
+                                            blue: CGFloat(hex & 0xFF) / 255 * step, alpha: 1)
+                        NSColorPanel.shared.color = color
+                        try? await Task.sleep(for: .milliseconds(step == 0.5 ? 700 : 100))
+                    }
+                    try? await Task.sleep(for: .milliseconds(700))
+                    if case let .color(color)? = store.project.background {
+                        addColorReport["background"] = [color.red, color.green, color.blue].map { Int(($0 * 255).rounded()) }
+                    }
+                    addColorReport["kept"] = WallpaperLibrary.customColors.map { [$0.red, $0.green, $0.blue].map { Int(($0 * 255).rounded()) } }
+                    if let view = window.contentView?.superview, let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+                        view.cacheDisplay(in: view.bounds, to: bitmap)
+                        try? bitmap.representation(using: .png, properties: [:])?.write(to: URL(filePath: "\(prefix)-addcolor.png"))
+                    }
+                    NSColorPanel.shared.close()
+                }
+                UserDefaults.standard.set(saved, forKey: "customBackgroundColors")
             }
             // OVERLAP_SNAPSHOT_TAB=video or audio selects the top track's first clip and opens that tab.
             if let tab = environment["OVERLAP_SNAPSHOT_TAB"].flatMap({ name in PanelTab.allCases.first { $0.title.lowercased() == name } }),
@@ -471,47 +660,6 @@ enum DebugSnapshot {
                 ]
             }
 
-            // OVERLAP_SNAPSHOT_EDIT=removeVideo deletes every video clip, then samples the preview's height and the
-            // top track's height every 30 ms. Both should change over several samples, and the timeline should be
-            // the same view afterward.
-            var transition: [String: Any] = [:]
-            if environment["OVERLAP_SNAPSHOT_EDIT"] == "removeVideo", let store = document?.store,
-               let window = NSApplication.shared.windows.first(where: \.isVisible), let content = window.contentView,
-               let preview = find(PlayerLayerView.self, in: content), let timeline = find(TimelineView.self, in: content) {
-                let videoClips = store.project.tracks.flatMap(\.clips).filter(store.project.showsPicture).map(\.id)
-                store.select(Set(videoClips))
-                store.deleteSelection()
-                var previewHeights: [Double] = []
-                var rowHeights: [Double] = []
-                var timelineTops: [Double] = []
-                var coveredWidths: [Double] = []
-                // OVERLAP_SNAPSHOT_MIDWAY=<sample> also captures the window partway through, as `<prefix>-mid.png`.
-                let midway = environment["OVERLAP_SNAPSHOT_MIDWAY"].flatMap(Int.init)
-                for sample in 0..<70 {
-                    try? await Task.sleep(for: .milliseconds(8))
-                    if sample == midway, let view = window.contentView?.superview,
-                       let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
-                        view.cacheDisplay(in: view.bounds, to: bitmap)
-                        try? bitmap.representation(using: .png, properties: [:])?.write(to: URL(filePath: "\(prefix)-mid.png"))
-                    }
-                    previewHeights.append(Double(preview.frame.height))
-                    rowHeights.append(timeline.debugTopRowHeight)
-                    // The timeline's top edge, measured down from the top of the window's content.
-                    let frame = timeline.convert(timeline.bounds, to: nil)
-                    timelineTops.append(Double(content.bounds.height - frame.maxY))
-                    coveredWidths.append(timeline.debugCoveredWidth)
-                }
-                transition = [
-                    "previewHeights": previewHeights,
-                    "rowHeights": rowHeights,
-                    "timelineTops": timelineTops,
-                    "coveredWidths": coveredWidths,
-                    "timelineLeft": Double(timeline.convert(timeline.bounds, to: nil).minX),
-                    "timelineWidth": Double(timeline.bounds.width),
-                    "sameTimeline": find(TimelineView.self, in: content) === timeline,
-                ]
-            }
-
             // OVERLAP_SNAPSHOT_TITLEEDIT=<name> starts editing the title, types a name, then clicks the timeline
             // through the app's event queue. The edit should end, rename the file, and never widen the title.
             var titleEdit: [String: Any] = [:]
@@ -620,7 +768,6 @@ enum DebugSnapshot {
                     "playerError": store.playback.player.currentItem?.error?.localizedDescription ?? "",
                     "resizeHeights": resizeHeights,
                     "editTimes": editTimes,
-                    "transition": transition,
                     "crossfade": crossfadeReport,
                     "dragTarget": dragSummary,
                     "menu": menuLines,
@@ -632,8 +779,15 @@ enum DebugSnapshot {
                     "perf": perfReport,
                     "windowResize": windowResize,
                     "move": moveReport,
+                    "popUp": popUpReport,
                     "savePanel": savePanelReport,
                     "isolation": isolationReport,
+                    "firstResponder": NSApplication.shared.windows.first(where: \.isVisible)?.firstResponder.map { String(describing: type(of: $0)) } ?? "",
+                    "windowOnScreen": NSApplication.shared.windows.first(where: \.isVisible)?.occlusionState.contains(.visible) ?? false,
+                    "appActive": NSApplication.shared.isActive,
+                    "pixels": pixelsReport,
+                    "titleSeek": titleSeekReport,
+                    "addColor": addColorReport,
                     "windowTitle": store.windowTitle,
                     "titleEdit": titleEdit,
                     "fileURL": document?.fileURL?.path ?? "",

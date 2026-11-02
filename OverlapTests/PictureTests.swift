@@ -286,6 +286,48 @@ struct PictureTests {
         #expect(try pixel(rendered, x: 0.5, y: 0.74).isClose(to: .white, within: 0.15))
     }
 
+    @Test func theBlankTrackHasAFrameForEveryFrame() async throws {
+        // Text over nothing else: the blank track is the only video under it, and a paused player only draws again
+        // when the frame under the playhead changes. Stretched, one frame would cover everything, and the text
+        // wouldn't show after a seek.
+        var project = Project()
+        _ = project.addTitle(Title(text: "Hi"), at: .zero, target: .existing(project.tracks[0].id))
+        project.tracks[0].clips[0].duration = Time(seconds: 25)
+        let built = try await CompositionBuilder.build(project: project, assets: { _ in nil })
+        let base = try #require(built.composition.tracks(withMediaType: .video).first)
+        #expect(base.segments.count == 3)
+        #expect(base.segments.allSatisfy { $0.timeMapping.source.duration == $0.timeMapping.target.duration })
+        #expect(base.segments.last?.timeMapping.target.end == Time(seconds: 25).cmTime)
+        let blank = try #require(try await AVURLAsset(url: BlankVideo.url()).loadTracks(withMediaType: .video).first)
+        #expect(try await blank.load(.nominalFrameRate) >= 29)
+    }
+
+    @Test func aBackgroundAloneIsThePicture() async throws {
+        // Two seconds of silence: sound, with nothing visual on the timeline.
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appending(path: "silence.wav")
+        do {
+            let format = try #require(AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1))
+            let buffer = try #require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 96_000))
+            buffer.frameLength = 96_000
+            let file = try AVAudioFile(forWriting: url, settings: format.settings, commonFormat: .pcmFormatFloat32, interleaved: false)
+            try file.write(from: buffer)
+        }
+        let sound = Asset(id: UUID(), fileName: url.lastPathComponent, displayName: "Silence", kind: .audio,
+                          duration: Time(seconds: 2), hasAudio: true)
+        var project = Project()
+        project.assets = [sound]
+        project.tracks[0].clips = [clip(sound)]
+        #expect(!project.hasPicture)
+        var withBackground = project
+        withBackground.background = .color(Self.blue)
+        #expect(withBackground.hasPicture)
+        // Choosing a background gives the composition a picture, so it's a rebuild rather than a look change.
+        #expect(CompositionBuilder.layout(of: withBackground) != CompositionBuilder.layout(of: project))
+        let image = try await frame(of: withBackground, urls: [sound.id: url], at: 1)
+        #expect(try pixel(image, x: 0.5, y: 0.5).isClose(to: Self.blue))
+    }
+
     @Test func lookChangesShowWithoutARebuild() async throws {
         var project = Project()
         project.canvas = canvas

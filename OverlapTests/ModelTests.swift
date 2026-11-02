@@ -270,7 +270,7 @@ struct StillClipTests {
         #expect(!project.playsSound(title) && !project.playsSound(background))
         #expect(project.isPlaceable(title) && !project.isPlaceable(background))
         #expect(project.hasVisualClips)
-        #expect(title.visual.x == -0.28)
+        #expect(title.visual.x == TitleStyle.lowerThird.visual.x)
     }
 
     @Test func removingAWallpaperClearsTheBackground() {

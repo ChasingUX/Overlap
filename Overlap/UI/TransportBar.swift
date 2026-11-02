@@ -3,9 +3,6 @@ import SwiftUI
 /// The playback controls bar: time on the left, transport in the center, zoom on the right.
 struct TransportBar: View {
     @Bindable var store: ProjectStore
-    var showsTopBorder = true
-    /// How much of the bar's left side the panel covers; its controls lay out in the rest.
-    var leadingInset: CGFloat = 0
 
     var body: some View {
         ZStack {
@@ -41,10 +38,9 @@ struct TransportBar: View {
             .disabled(store.project.duration == .zero)
         }
         .padding(.horizontal, 20)
-        .padding(.leading, leadingInset)
         .frame(height: 48)
         .background(Color(nsColor: Theme.chrome))
-        .overlay(alignment: .top) { Hairline().opacity(showsTopBorder ? 1 : 0) }
+        .overlay(alignment: .top) { Hairline() }
         .overlay(alignment: .bottom) { Hairline() }
     }
 

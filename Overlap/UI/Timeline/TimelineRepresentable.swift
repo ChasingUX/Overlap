@@ -13,10 +13,6 @@ struct TimelineSnapshot {
     var isolatedWaveforms: [UUID: Waveform]
     var thumbnails: [UUID: CGImage]
     var filmstrips: [UUID: Filmstrip]
-    var heightScale: Double
-    /// How much of the timeline's left side the rail and panel cover. Audio-only they run the full height, over
-    /// the timeline, and its content starts after them.
-    var coveredWidth: CGFloat = 0
 }
 
 /// Drags from the Media tab carry the asset's ID as a prefixed string. The prefix has a space so the string
@@ -57,32 +53,8 @@ enum TimelineDrag {
     }
 }
 
-/// The timeline with its track heights (1.2× with a preview, 1.6× audio-only, where it fills the window) and the
-/// width the rail and panel cover. SwiftUI steps both through the window's own layout animation one frame at a
-/// time (it does this for views like this one, not for AppKit views), so the tracks and their content move in
-/// step with the preview and panel.
-struct AnimatedTimeline: View, @preconcurrency Animatable {
-    let store: ProjectStore
-    var heightScale: Double
-    var coveredWidth: CGFloat
-
-    var animatableData: AnimatablePair<Double, CGFloat> {
-        get { AnimatablePair(heightScale, coveredWidth) }
-        set {
-            heightScale = newValue.first
-            coveredWidth = newValue.second
-        }
-    }
-
-    var body: some View {
-        TimelineRepresentable(store: store, heightScale: heightScale, coveredWidth: coveredWidth)
-    }
-}
-
 struct TimelineRepresentable: NSViewRepresentable {
     let store: ProjectStore
-    var heightScale: Double
-    var coveredWidth: CGFloat
 
     func makeNSView(context: Context) -> TimelineView {
         TimelineView(store: store, snapshot: snapshot)
@@ -103,9 +75,7 @@ struct TimelineRepresentable: NSViewRepresentable {
             waveforms: store.waveforms,
             isolatedWaveforms: store.isolatedWaveforms,
             thumbnails: store.thumbnails,
-            filmstrips: store.filmstrips,
-            heightScale: heightScale,
-            coveredWidth: coveredWidth
+            filmstrips: store.filmstrips
         )
     }
 }

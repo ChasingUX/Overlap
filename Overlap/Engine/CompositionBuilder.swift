@@ -61,6 +61,8 @@ enum CompositionBuilder {
 
         var assets: [UUID]
         var tracks: [[Placement]]
+        /// A background alone gives the composition a picture, so choosing one, or None, is a rebuild.
+        var hasPicture: Bool
     }
 
     /// Everything about a build that's heard rather than seen: volumes, fades, crossfade curves, mute and solo,
@@ -110,7 +112,8 @@ enum CompositionBuilder {
                                      keepsPitch: clip.preservesPitch || clip.speed == 1, isolatesVoice: clip.isolatesVoice,
                                      isTitle: clip.title != nil, isFill: clip.fill != nil)
                 }
-            }
+            },
+            hasPicture: project.hasPicture
         )
     }
 
@@ -226,16 +229,20 @@ enum CompositionBuilder {
         var videoComposition: AVVideoComposition?
         var videoConfiguration: AVVideoComposition.Configuration?
         var plan: RenderPlanBox?
-        if project.hasVisualClips, project.duration > .zero {
+        if project.hasPicture, project.duration > .zero {
             // A blank track under the whole timeline gives the compositor a frame to draw everywhere, gaps included.
+            // Laid end to end rather than stretched, so it keeps a frame for every frame shown.
             let blank = AVURLAsset(url: try await BlankVideo.url())
-            let second = CMTimeRange(start: .zero, duration: CMTime(value: 1, timescale: 1))
             guard let blankVideo = try await blank.loadTracks(withMediaType: .video).first,
                   let base = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid) else {
                 throw CocoaError(.fileReadCorruptFile)
             }
-            try base.insertTimeRange(second, of: blankVideo, at: .zero)
-            base.scaleTimeRange(second, toDuration: project.duration.cmTime)
+            var covered = Time.zero
+            while covered < project.duration {
+                let piece = min(BlankVideo.length, project.duration - covered)
+                try base.insertTimeRange(CMTimeRange(start: .zero, duration: piece.cmTime), of: blankVideo, at: covered.cmTime)
+                covered = covered + piece
+            }
 
             let box = RenderPlanBox(RenderPlan(
                 canvas: renderSize,

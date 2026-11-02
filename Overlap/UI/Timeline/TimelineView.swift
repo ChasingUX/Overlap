@@ -6,6 +6,8 @@ final class TimelineView: NSView {
     private enum Layout {
         static let rulerHeight: CGFloat = 30
         static let leadingInset: CGFloat = 16
+        /// How much taller than its stored height a track draws.
+        static let trackScale = 1.2
         static let trackGap: CGFloat = 4
         static let rowSpacing: CGFloat = 4
         static let clipInset: CGFloat = 3
@@ -68,8 +70,6 @@ final class TimelineView: NSView {
     private var lastAnimationStep: CFTimeInterval?
     /// The project with an in-progress trim applied, drawn until the trim is committed.
     private var previewProject: Project?
-    /// Where each track belonged when last laid out, so a change in track height can carry the tracks with it.
-    private var lastLaneTargets: [UUID: CGFloat] = [:]
     /// The clip under the pointer, which shows its fade handles.
     private var hoveredClip: UUID?
     /// Frames for text clips, drawn once for each look and size.
@@ -104,14 +104,23 @@ final class TimelineView: NSView {
 
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
+
+    /// The timeline has the keyboard when the window opens, so single-key shortcuts such as Space work straight
+    /// away, instead of the first text field in the panel taking it.
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if let window, window.initialFirstResponder == nil {
+            window.initialFirstResponder = self
+        }
+    }
     /// Drags here move clips and tracks, with or without modifiers; they never move the window.
     override var mouseDownCanMoveWindow: Bool { false }
 
     // MARK: Geometry
 
     private var project: Project { previewProject ?? snapshot.project }
-    /// Where time zero sits when scrolled to the start: after the part the rail and panel cover, plus a margin.
-    private var contentLeft: CGFloat { snapshot.coveredWidth + Layout.leadingInset }
+    /// Where time zero sits when scrolled to the start: a margin in from the left edge.
+    private var contentLeft: CGFloat { Layout.leadingInset }
     private var pixelsPerSecond: CGFloat { CGFloat(snapshot.pixelsPerSecond) }
 
     private func x(for time: Time) -> CGFloat {
@@ -123,7 +132,7 @@ final class TimelineView: NSView {
     }
 
     private func rowHeight(_ track: Track) -> CGFloat {
-        CGFloat(track.height * snapshot.heightScale)
+        CGFloat(track.height * Layout.trackScale)
     }
 
     private var defaultRowHeight: CGFloat {
@@ -387,20 +396,7 @@ final class TimelineView: NSView {
         if targets.contains(where: { abs((laneY[$0.key] ?? $0.value) - $0.value) > 0.5 }) {
             startAnimation()
         }
-        lastLaneTargets = targets
         needsDisplay = true
-    }
-
-    /// Track heights change one animation frame at a time, driven by the window's layout animation. Each track
-    /// moves by exactly as much as its place moved, keeping any easing already under way for a drag or a removal.
-    private func followHeightChange() {
-        let targets = laneTargets()
-        for (id, target) in targets {
-            if let y = laneY[id], let previous = lastLaneTargets[id] {
-                laneY[id] = y + (target - previous)
-            }
-        }
-        lastLaneTargets = targets
     }
 
     private func laneTargets() -> [UUID: CGFloat] {
@@ -451,7 +447,7 @@ final class TimelineView: NSView {
                 anchor = zoomAnchor
             } else {
                 let playheadX = contentLeft + CGFloat(snapshot.currentTime.seconds) * oldPPS - scrollX
-                if playheadX >= snapshot.coveredWidth, playheadX <= bounds.width {
+                if playheadX >= 0, playheadX <= bounds.width {
                     anchor = (snapshot.currentTime, playheadX)
                 } else {
                     anchor = (Time(seconds: Double(scrollX / oldPPS)), contentLeft)
@@ -466,13 +462,7 @@ final class TimelineView: NSView {
         }
         scrollX = max(0, scrollX)
         scrollY = scrollY.clamped(to: 0...maxScrollY)
-        if old.heightScale != snapshot.heightScale {
-            followHeightChange()
-        }
-        if old.coveredWidth != snapshot.coveredWidth {
-            reportViewportWidth()
-        }
-        if old.project != snapshot.project || old.heightScale != snapshot.heightScale {
+        if old.project != snapshot.project {
             updateLanes()
         }
         needsDisplay = true
@@ -498,12 +488,6 @@ final class TimelineView: NSView {
         Task { @MainActor [store] in
             store.timelineViewportWidth = width
         }
-    }
-
-    /// The part the rail and panel cover belongs to them: clicks, scrolls and drops there pass through.
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        guard let superview else { return super.hitTest(point) }
-        return convert(point, from: superview).x < snapshot.coveredWidth ? nil : super.hitTest(point)
     }
 
     // MARK: Drawing
@@ -575,8 +559,7 @@ final class TimelineView: NSView {
             .foregroundColor: NSColor.secondaryLabelColor,
         ]
         let size = hint.size(withAttributes: attributes)
-        let area = CGRect(x: snapshot.coveredWidth, y: Layout.rulerHeight,
-                          width: bounds.width - snapshot.coveredWidth, height: bounds.height - Layout.rulerHeight)
+        let area = CGRect(x: 0, y: Layout.rulerHeight, width: bounds.width, height: bounds.height - Layout.rulerHeight)
         hint.draw(at: CGPoint(x: area.midX - size.width / 2, y: area.midY - size.height / 2), withAttributes: attributes)
     }
 
@@ -700,7 +683,7 @@ final class TimelineView: NSView {
         guard !symbols.isEmpty else { return }
         let configuration = NSImage.SymbolConfiguration(pointSize: 9, weight: .semibold)
             .applying(NSImage.SymbolConfiguration(paletteColors: [NSColor.white.withAlphaComponent(0.9)]))
-        let pill = CGRect(x: snapshot.coveredWidth + 3, y: row.midY - 9, width: CGFloat(symbols.count) * 14 + 6, height: 18)
+        let pill = CGRect(x: 3, y: row.midY - 9, width: CGFloat(symbols.count) * 14 + 6, height: 18)
         NSColor.black.withAlphaComponent(0.6).setFill()
         NSBezierPath(roundedRect: pill, xRadius: 9, yRadius: 9).fill()
         for (index, symbol) in symbols.enumerated() {
@@ -888,7 +871,7 @@ final class TimelineView: NSView {
     }
 
     private func drawLabel(_ text: String, in rect: CGRect, overImage: Bool, leadingInset: CGFloat = 0) {
-        let visibleMinX = max(rect.minX + leadingInset, snapshot.coveredWidth)
+        let visibleMinX = max(rect.minX + leadingInset, 0)
         let width = rect.maxX - visibleMinX - 12
         guard width > 16 else { return }
         let attributes: [NSAttributedString.Key: Any] = [
@@ -1148,14 +1131,6 @@ final class TimelineView: NSView {
     override func mouseMoved(with event: NSEvent) {
         guard case .none = interaction else { return }
         let point = convert(event.locationInWindow, from: nil)
-        // Over the rail and panel, the pointer is theirs.
-        guard point.x >= snapshot.coveredWidth else {
-            if hoveredClip != nil {
-                hoveredClip = nil
-                needsDisplay = true
-            }
-            return
-        }
         let hovered = point.y < Layout.rulerHeight ? nil : clip(near: point)?.id
         if hovered != hoveredClip {
             hoveredClip = hovered
@@ -1444,7 +1419,7 @@ extension TimelineView {
               let row = rows.first(where: { project.tracks[$0.track].clips.contains { $0.id == id } }),
               let clip = project.clip(id) else { return [] }
         let rect = clipRect(clip, in: row.rect)
-        let point = convert(CGPoint(x: max(rect.midX, snapshot.coveredWidth + 20), y: rect.midY), to: nil)
+        let point = convert(CGPoint(x: max(rect.midX, 20), y: rect.midY), to: nil)
         guard let event = NSEvent.mouseEvent(with: .rightMouseDown, location: point, modifierFlags: [], timestamp: 0,
                                              windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1),
               let menu = menu(for: event) else { return [] }
@@ -1455,10 +1430,6 @@ extension TimelineView {
             }
         }
         return lines(menu, depth: 0)
-    }
-
-    var debugCoveredWidth: Double {
-        Double(snapshot.coveredWidth)
     }
 
     /// The top track's height as drawn right now.

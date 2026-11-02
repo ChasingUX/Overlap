@@ -207,11 +207,8 @@ struct MasterPanel: View {
                 ToggleRow(title: "Normalize loudness", isOn: store.project.normalizesLoudness) {
                     store.setNormalizesLoudness($0)
                 }
-                if store.project.normalizesLoudness {
-                    PanelNote(text: "Exports are brought to −14 LUFS, the level YouTube and streaming services play at, with peaks kept under −1 dBTP.")
-                }
+                .help("Exports at the level YouTube and streaming services play at: −14 LUFS, with peaks under −1 dBTP")
             }
-            PanelNote(text: "Select an audio clip, or a video with sound, for its own volume.")
         }
     }
 }

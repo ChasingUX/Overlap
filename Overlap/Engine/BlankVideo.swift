@@ -1,9 +1,14 @@
 import AVFoundation
 
-/// A one-second black movie, made once per launch in the temporary folder. Stretched under the whole timeline, it gives
-/// the composition a video track everywhere, so the compositor draws backgrounds, images and text even where no
-/// video plays.
+/// A short black movie, made once per launch in the temporary folder. Laid end to end under the whole timeline, it
+/// gives the composition a video track everywhere, so the compositor draws backgrounds, images and text even where
+/// no video plays. It has a frame for every 30th of a second, each one a keyframe: a paused player only draws again
+/// when the frame under the playhead changes, so a single long frame would leave the picture stuck after a seek
+/// wherever no video plays, and keyframes let a seek land anywhere without decoding its way there.
 enum BlankVideo {
+    static let length = Time(seconds: 10)
+    private static let framesPerSecond = 30
+
     /// Made once per launch; everyone asking at the same time waits for the same one.
     @MainActor private static var making: Task<URL, Error>?
 
@@ -39,6 +44,7 @@ enum BlankVideo {
             AVVideoCodecKey: AVVideoCodecType.h264,
             AVVideoWidthKey: 64,
             AVVideoHeightKey: 64,
+            AVVideoCompressionPropertiesKey: [AVVideoMaxKeyFrameIntervalKey: 1],
         ])
         let attributes = CVPixelBufferCreationAttributes(pixelFormatType: CVPixelFormatType(rawValue: kCVPixelFormatType_32BGRA),
                                                          size: CVImageSize(width: 64, height: 64))
@@ -52,9 +58,13 @@ enum BlankVideo {
                 plane.bytes.initializeMemory(as: UInt8.self, repeating: 0)
             }
         }
-        try await receiver.append(CVReadOnlyPixelBuffer(frame), with: .zero)
+        let black = CVReadOnlyPixelBuffer(frame)
+        let frames = Int(length.seconds) * framesPerSecond
+        for index in 0..<frames {
+            try await receiver.append(black, with: CMTime(value: CMTimeValue(index), timescale: CMTimeScale(framesPerSecond)))
+        }
         receiver.finish()
-        writer.endSession(atSourceTime: CMTime(value: 1, timescale: 1))
+        writer.endSession(atSourceTime: length.cmTime)
         await writer.finishWriting()
         if writer.status != .completed { throw writer.error ?? CocoaError(.fileWriteUnknown) }
     }

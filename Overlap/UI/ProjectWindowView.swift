@@ -6,50 +6,43 @@ struct ProjectWindowView: View {
     @State private var timelineHeight: CGFloat = 380
     @State private var dragStartTimelineHeight: CGFloat?
 
-    /// The preview row also holds the panel, so it keeps enough height for the panel's controls.
-    private let minimumPreviewHeight: CGFloat = 240
+    /// The preview row also holds the rail and panel, so it keeps enough height for all six rail buttons and the
+    /// panel's controls.
+    private let minimumPreviewHeight: CGFloat = 256
     private let minimumTimelineHeight: CGFloat = 200
 
     private static let panelWidth: CGFloat = 264
 
-    /// With a preview, the rail and panel sit beside it and the timeline runs the full width of the window below.
-    /// Projects with nothing visual have no preview: the rail and panel run the full height, over the timeline's
-    /// left side, and the timeline's content starts after them. The timeline always spans the window, so the
-    /// change is one motion: the preview folds up, the panel grows down over the timeline, and the timeline's
-    /// content slides over to make room, all on the same animation.
+    private var aspectRatio: CGFloat? {
+        store.project.canvas.map { CGFloat($0.width) / CGFloat(max($0.height, 1)) }
+    }
+
+    /// The rail and panel sit beside the preview, and the controls bar and timeline run the full width of the
+    /// window below. The preview is always there: before anything visual is added it shows the empty canvas.
     /// The split is drawn by hand so the controls bar's top border is a plain hairline, matching its bottom one;
     /// the system split view would draw its own thicker divider.
     var body: some View {
         GeometryReader { geometry in
             let size = geometry.size
-            let showsPreview = store.project.hasVisualClips
-            let side = RailView.width + 1 + (store.isPanelVisible ? Self.panelWidth + 1 : 0)
-            // The rail and panel are as tall as the preview, or the whole window without one.
-            let top = showsPreview ? clampedPreviewHeight(in: size.height) : size.height
-            ZStack(alignment: .topLeading) {
-                PreviewView(store: store,
-                            aspectRatio: store.project.canvas.map { CGFloat($0.width) / CGFloat(max($0.height, 1)) })
-                    .frame(width: max(0, size.width - side), height: showsPreview ? top : 0)
-                    .opacity(showsPreview ? 1 : 0)
-                    .clipped()
-                    .padding(.leading, side)
-                timelineArea(covered: showsPreview ? 0 : side)
-                    .frame(width: size.width, height: showsPreview ? size.height - top : size.height)
-                    .padding(.top, showsPreview ? top : 0)
-                // Above the timeline, so while the layout changes the panel slides over it rather than under.
-                sideColumn
-                    .frame(width: side, height: top)
-                if showsPreview {
-                    resizeHandle(total: size.height)
-                        .frame(width: size.width)
-                        .padding(.top, top - 4)
+            let top = clampedPreviewHeight(in: size.height)
+            VStack(spacing: 0) {
+                HStack(spacing: 0) {
+                    sideColumn
+                    PreviewView(store: store, aspectRatio: aspectRatio, stage: store.stageImage)
                 }
+                .frame(height: top)
+                .clipped()
+                TransportBar(store: store)
+                TimelineRepresentable(store: store)
+            }
+            .overlay(alignment: .topLeading) {
+                resizeHandle(total: size.height)
+                    .padding(.top, top - 4)
             }
             .coordinateSpace(.named(Self.editorSpace))
         }
         .background(Color(nsColor: Theme.chrome))
         .overlay(alignment: .top) { Hairline() }
-        .animation(Motion.layout, value: store.project.hasVisualClips)
         .overlay(alignment: .bottom) {
             ToastOverlay(store: store)
         }
@@ -116,14 +109,5 @@ struct ProjectWindowView: View {
                     timelineHeight = total - clampedPreviewHeight(timeline: start - drag.translation.height, in: total)
                 }
                 .onEnded { _ in dragStartTimelineHeight = nil })
-    }
-
-    /// The controls bar and timeline, full width. `covered` is how much of their left side the panel is over.
-    private func timelineArea(covered: CGFloat) -> some View {
-        VStack(spacing: 0) {
-            // Audio-only, the bar sits right under the toolbar, whose own border takes the place of its top one.
-            TransportBar(store: store, showsTopBorder: store.project.hasVisualClips, leadingInset: covered)
-            AnimatedTimeline(store: store, heightScale: store.project.hasVisualClips ? 1.2 : 1.6, coveredWidth: covered)
-        }
     }
 }

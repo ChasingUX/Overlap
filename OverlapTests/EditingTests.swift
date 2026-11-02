@@ -193,3 +193,34 @@ struct KeyboardEditingTests {
             == ["(0.0, 0.0, 60.0)", "(60.0, 120.0, 60.0)"])
     }
 }
+
+/// The Canvas tab's shape and size.
+@MainActor
+struct CanvasSizeTests {
+    func makeStore() -> ProjectStore {
+        ProjectStore(mediaDirectory: FileManager.default.temporaryDirectory.appending(path: UUID().uuidString))
+    }
+
+    @Test func aNewShapeKeepsTheResolution() {
+        let store = makeStore()
+        store.setCanvasAspect(.wide)
+        #expect(store.project.canvas.map { [$0.width, $0.height] } == [1920, 1080])
+        store.setCanvasSize(width: 3840, height: 2160)
+        #expect(store.project.canvasAspect == .wide)
+        store.setCanvasAspect(.tall)
+        #expect(store.project.canvas.map { [$0.width, $0.height] } == [2160, 3840])
+        store.setCanvasAspect(.standard)
+        #expect(store.project.canvas.map { [$0.width, $0.height] } == [2880, 2160])
+    }
+
+    @Test func sizingAutoChoosesTheShapeItHas() {
+        let store = makeStore()
+        store.setCanvasAspect(.auto)
+        store.setCanvasSize(width: 1080, height: 1080)
+        #expect(store.project.canvasAspect == .square)
+        store.setCanvasAspect(.auto)
+        store.setCanvasSize(width: 2000, height: 1001)
+        #expect(store.project.canvasAspect == .custom)
+        #expect(store.project.canvas.map { [$0.width, $0.height] } == [2000, 1000])
+    }
+}
