@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// The playback controls bar: time on the left, transport in the center, zoom on the right.
+/// The playback controls bar: time on the left, transport in the center, Loop Playback and zoom on the right.
 struct TransportBar: View {
     @Bindable var store: ProjectStore
 
@@ -18,6 +18,8 @@ struct TransportBar: View {
                 .font(.system(size: 12, weight: .medium).monospacedDigit())
                 Spacer()
                 HStack(spacing: 8) {
+                    loopButton
+                        .padding(.trailing, 8)
                     zoomButton(.zoomOut, label: "Zoom out", factor: 1 / 1.5)
                     Slider(value: zoom, in: log(ProjectStore.pixelsPerSecondRange.lowerBound)...log(ProjectStore.pixelsPerSecondRange.upperBound))
                         .controlSize(.small)
@@ -65,6 +67,22 @@ struct TransportBar: View {
         .foregroundStyle(.tertiary)
         .help(label)
         .accessibilityLabel(label)
+    }
+
+    /// Loop Playback: blue while on, when playing past the end starts again from the beginning.
+    private var loopButton: some View {
+        let isOn = store.playback.loopsPlayback
+        return Button {
+            store.playback.loopsPlayback.toggle()
+        } label: {
+            AppIcon.loop.image
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(isOn ? Color.accentColor : Color.secondary)
+        }
+        .buttonStyle(TransportButtonStyle())
+        .help(isOn ? "Turn off Loop Playback (⌘L)" : "Loop Playback (⌘L)")
+        .accessibilityLabel("Loop Playback")
+        .accessibilityValue(isOn ? "On" : "Off")
     }
 
     private func transportButton(_ icon: AppIcon, label: String, size: CGFloat = 15, action: @escaping () -> Void) -> some View {

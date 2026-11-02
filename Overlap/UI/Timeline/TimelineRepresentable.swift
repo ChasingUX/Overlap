@@ -13,6 +13,14 @@ struct TimelineSnapshot {
     var isolatedWaveforms: [UUID: Waveform]
     var thumbnails: [UUID: CGImage]
     var filmstrips: [UUID: Filmstrip]
+    var loopHighlight: LoopHighlight?
+}
+
+/// A loop pointed at in the Video tab: the stretch of its clip's source, in seconds, to shade on the clip.
+struct LoopHighlight: Equatable {
+    var clip: UUID
+    var start: Double
+    var end: Double
 }
 
 /// Drags from the Media tab carry the asset's ID as a prefixed string. The prefix has a space so the string
@@ -75,7 +83,8 @@ struct TimelineRepresentable: NSViewRepresentable {
             waveforms: store.waveforms,
             isolatedWaveforms: store.isolatedWaveforms,
             thumbnails: store.thumbnails,
-            filmstrips: store.filmstrips
+            filmstrips: store.filmstrips,
+            loopHighlight: store.highlightedLoop
         )
     }
 }

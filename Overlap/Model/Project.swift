@@ -530,6 +530,27 @@ extension Project {
         tracks[location.track].clips.sort { $0.start < $1.start }
     }
 
+    /// Makes a clip play one loop of its source, from `sourceStart` up to `sourceEnd`. Like any trim, the picture
+    /// stays where it is on the timeline, unless the clip would then run into another clip or before zero: then it
+    /// keeps its start, and any clips it would run into move along.
+    mutating func trimToLoop(_ id: UUID, from sourceStart: Time, to sourceEnd: Time) {
+        guard let location = location(ofClip: id), !tracks[location.track].isLocked, sourceEnd > sourceStart else { return }
+        var clip = tracks[location.track].clips[location.clip]
+        let others = tracks[location.track].clips.filter { $0.id != id }
+        let duration = Time(seconds: (sourceEnd - sourceStart).seconds / clip.speed)
+        let inPlace = clip.start + Time(seconds: (sourceStart - clip.sourceStart).seconds / clip.speed)
+        let fits = inPlace >= .zero && !others.contains { $0.start < inPlace + duration && $0.end > inPlace }
+        let oldEnd = clip.end
+        clip.start = fits ? inPlace : clip.start
+        clip.sourceStart = sourceStart
+        clip.duration = duration
+        tracks[location.track].clips[location.clip] = clip
+        if !fits, let next = others.filter({ $0.start >= oldEnd }).map(\.start).min(), clip.end > next {
+            shiftClips(onTrack: location.track, startingAtOrAfter: oldEnd, by: clip.end - next, except: id)
+        }
+        tracks[location.track].clips.sort { $0.start < $1.start }
+    }
+
     private mutating func shiftClips(onTrack track: Int, startingAtOrAfter time: Time, by shift: Time, except id: UUID) {
         for index in tracks[track].clips.indices where tracks[track].clips[index].id != id && tracks[track].clips[index].start >= time {
             tracks[track].clips[index].start = tracks[track].clips[index].start + shift

@@ -156,6 +156,123 @@ enum DebugSnapshot {
                 }
             }
 
+            // OVERLAP_SNAPSHOT_LOOPS=<seconds> selects the first video clip, parks the playhead that far into it, opens
+            // the Video tab and finds the video's loops. It reports them, captures `<prefix>-loops.png` with the
+            // first one highlighted on the timeline, then trims the clip to it and reports the clip.
+            var loopsReport: [String: Any] = [:]
+            if let offset = environment["OVERLAP_SNAPSHOT_LOOPS"].flatMap(Double.init), let store = document?.store,
+               let clip = store.project.tracks.flatMap(\.clips).first(where: { store.project.asset($0.assetID)?.kind == .video }) {
+                store.select([clip.id])
+                store.activeTab = .video
+                store.playback.seek(to: clip.start + Time(seconds: offset))
+                store.findLoops(inAsset: clip.assetID)
+                let started = Date()
+                while store.suggestedLoops[clip.assetID] == nil, Date().timeIntervalSince(started) < 30 {
+                    try? await Task.sleep(for: .milliseconds(100))
+                }
+                loopsReport["seconds"] = (Date().timeIntervalSince(started) * 100).rounded() / 100
+                loopsReport["repeats every"] = store.repetitions[clip.assetID]?.length ?? -1
+                let describe = { (loops: [Loop]) in loops.map { String(format: "%.2f–%.2f", $0.start, $0.end) } }
+                loopsReport["suggested"] = describe(store.suggestedLoops[clip.assetID] ?? [])
+                loopsReport["repeating"] = describe(store.repeatingLoops(in: clip))
+                loopsReport["from playhead"] = describe(store.loopsFromPlayhead(in: clip))
+                let first = store.repeatingLoops(in: clip).first ?? store.suggestedLoops[clip.assetID]?.first
+                if let first {
+                    store.highlightedLoop = LoopHighlight(clip: clip.id, start: first.start, end: first.end)
+                }
+                try? await Task.sleep(for: .milliseconds(400))
+                if let window = NSApplication.shared.windows.first(where: \.isVisible), let view = window.contentView?.superview,
+                   let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+                    view.cacheDisplay(in: view.bounds, to: bitmap)
+                    try? bitmap.representation(using: .png, properties: [:])?.write(to: URL(filePath: "\(prefix)-loops.png"))
+                    // The panel scrolled to its end, where the Loop section sits, as `<prefix>-loops-panel.png`.
+                    func scrollViews(in view: NSView) -> [NSScrollView] {
+                        (view as? NSScrollView).map { [$0] } ?? view.subviews.flatMap(scrollViews)
+                    }
+                    for scroll in scrollViews(in: view) where scroll.frame.width < 400 {
+                        if let document = scroll.documentView {
+                            scroll.contentView.scroll(to: NSPoint(x: 0, y: max(0, document.frame.height - scroll.contentView.bounds.height)))
+                            scroll.reflectScrolledClipView(scroll.contentView)
+                        }
+                    }
+                    try? await Task.sleep(for: .milliseconds(300))
+                    if let panel = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+                        view.cacheDisplay(in: view.bounds, to: panel)
+                        try? panel.representation(using: .png, properties: [:])?.write(to: URL(filePath: "\(prefix)-loops-panel.png"))
+                    }
+                }
+                if let first {
+                    store.highlightedLoop = nil
+                    store.trimToLoop(first)
+                    if let trimmed = store.project.clip(clip.id) {
+                        loopsReport["trimmed"] = [trimmed.start.seconds, trimmed.sourceStart.seconds, trimmed.duration.seconds]
+                        loopsReport["plays it"] = store.plays(first, in: trimmed)
+                    }
+                }
+            }
+
+            // OVERLAP_SNAPSHOT_EDITED=1 makes an edit, then samples every half second for eight seconds whether the
+            // document counts it as unsaved and the title says Saving…, then undoes it and times the next autosave.
+            var editedSamples: [[Double]] = []
+            if environment["OVERLAP_SNAPSHOT_EDITED"] != nil, let document {
+                let store = document.store
+                store.setMasterVolume(store.project.masterVolume * 0.9)
+                // An edit made from a click ends with its event, which is when the undo step closes and AppKit counts
+                // the change. This one comes from no event, so post one.
+                func closeUndoStep() {
+                    if let event = NSEvent.otherEvent(with: .applicationDefined, location: .zero, modifierFlags: [], timestamp: 0,
+                                                      windowNumber: 0, context: nil, subtype: 0, data1: 0, data2: 0) {
+                        NSApplication.shared.postEvent(event, atStart: false)
+                    }
+                }
+                closeUndoStep()
+                let started = Date()
+                for _ in 0..<16 {
+                    try? await Task.sleep(for: .milliseconds(500))
+                    editedSamples.append([(Date().timeIntervalSince(started) * 10).rounded() / 10, document.isDocumentEdited ? 1 : 0,
+                                          store.isSaving ? 1 : 0, document.hasUnautosavedChanges ? 1 : 0])
+                }
+                // Then undo it, which needs saving again, and wait for that autosave.
+                document.undoManager?.undo()
+                closeUndoStep()
+                editedSamples.append([-1, store.isSaving ? 1 : 0])
+                let undone = Date()
+                while store.isSaving, Date().timeIntervalSince(undone) < 15 { try? await Task.sleep(for: .milliseconds(100)) }
+                editedSamples.append([-2, store.isSaving ? 1 : 0, (Date().timeIntervalSince(undone) * 10).rounded() / 10])
+            }
+
+            // OVERLAP_SNAPSHOT_LOOPPLAY=1 turns Loop Playback on, plays the last second and on past the end, and samples
+            // the player every 10 ms, to see how long the jump back to the start takes. The setting is put back after.
+            var loopPlayReport: [String: Any] = [:]
+            if environment["OVERLAP_SNAPSHOT_LOOPPLAY"] != nil, let store = document?.store, store.playback.duration > .zero {
+                let saved = UserDefaults.standard.object(forKey: "loopsPlayback")
+                store.playback.loopsPlayback = true
+                store.playback.seek(to: store.playback.duration - Time(seconds: 1))
+                try? await Task.sleep(for: .milliseconds(500))
+                store.playback.togglePlay()
+                let started = Date()
+                var samples: [(wall: Double, time: Double)] = []
+                while Date().timeIntervalSince(started) < 2.5 {
+                    samples.append((Date().timeIntervalSince(started), store.playback.player.currentTime().seconds))
+                    try? await Task.sleep(for: .milliseconds(10))
+                }
+                store.playback.pause()
+                if let wrap = samples.indices.dropFirst().first(where: { samples[$0].time < samples[$0 - 1].time - 0.5 }) {
+                    let before = samples[wrap - 1]
+                    // When the start is playing again: the first sample after the wrap that's moved on.
+                    let moving = samples[wrap...].first { $0.time > 0.03 }
+                    let duration = store.playback.duration.seconds
+                    loopPlayReport["last before wrap"] = [before.wall, before.time]
+                    loopPlayReport["first moving after"] = moving.map { [$0.wall, $0.time] } ?? []
+                    // Wall time spent beyond what the media itself took, from the last sample to the first moving one.
+                    if let moving {
+                        loopPlayReport["stall ms"] = ((moving.wall - before.wall - (duration - before.time) - moving.time) * 1000).rounded()
+                    }
+                }
+                loopPlayReport["still playing"] = samples.last.map { $0.time > 0.5 } ?? false
+                UserDefaults.standard.set(saved, forKey: "loopsPlayback")
+            }
+
             // OVERLAP_SNAPSHOT_TEXTEDIT=commit or cancel double-clicks the first text showing, types into it on the
             // canvas, captures the window midway as `<prefix>-editing.png`, then applies or cancels.
             var textEditReport: [String: Any] = [:]
@@ -783,9 +900,15 @@ enum DebugSnapshot {
                     "savePanel": savePanelReport,
                     "isolation": isolationReport,
                     "firstResponder": NSApplication.shared.windows.first(where: \.isVisible)?.firstResponder.map { String(describing: type(of: $0)) } ?? "",
+                    "storeSaving": document?.store.isSaving ?? false,
+                    "documentEdited": document?.isDocumentEdited ?? false,
+                    "windowEdited": NSApplication.shared.windows.first(where: \.isVisible)?.isDocumentEdited ?? false,
                     "windowOnScreen": NSApplication.shared.windows.first(where: \.isVisible)?.occlusionState.contains(.visible) ?? false,
                     "appActive": NSApplication.shared.isActive,
                     "pixels": pixelsReport,
+                    "loops": loopsReport,
+                    "loopPlay": loopPlayReport,
+                    "edited": editedSamples,
                     "titleSeek": titleSeekReport,
                     "addColor": addColorReport,
                     "windowTitle": store.windowTitle,

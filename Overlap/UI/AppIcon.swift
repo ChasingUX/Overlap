@@ -15,6 +15,7 @@ enum AppIcon {
     case pause
     case goToStart
     case goToEnd
+    case loop
     case zoomOut
     case zoomIn
     case waveform
@@ -33,6 +34,7 @@ enum AppIcon {
         case .pause: "pause.fill"
         case .goToStart: "backward.end.fill"
         case .goToEnd: "forward.end.fill"
+        case .loop: "repeat"
         case .zoomOut: "minus"
         case .zoomIn: "plus"
         case .waveform: "waveform"

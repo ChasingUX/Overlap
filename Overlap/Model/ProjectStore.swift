@@ -81,9 +81,17 @@ final class ProjectStore {
     private(set) var isolatedWaveforms: [UUID: Waveform] = [:]
     var alert: AlertMessage?
     var assetPendingRemoval: Asset?
-    /// The document's name and unsaved-changes state, shown in the title bar.
+    /// The document's name, shown in the title bar.
     var windowTitle = "Untitled"
-    var isEdited = false
+    /// Whether changes are waiting for the project's autosave, shown as "Saving…" beside its name.
+    private(set) var isSaving = false
+    /// Set by the document, which autosaves shortly after each change.
+    @ObservationIgnored var changed: (() -> Void)?
+
+    /// The document finished saving; `unsaved` is whether anything changed meanwhile.
+    func savingFinished(unsaved: Bool) {
+        isSaving = unsaved
+    }
     /// Set by the window controller, which owns the document that does the renaming.
     @ObservationIgnored var renameHandler: ((String) -> Void)?
 
@@ -140,6 +148,8 @@ final class ProjectStore {
         project.normalizeTracks()
         self.project = project
         self.mediaDirectory = mediaDirectory
+        // Opened, or put back to a saved version: nothing to save yet.
+        isSaving = false
         avAssets = [:]
         installedLayout = nil
         selection = []
@@ -181,6 +191,8 @@ final class ProjectStore {
         change(&project)
         project.normalizeTracks()
         registerUndo(restoring: before, actionName: actionName)
+        isSaving = true
+        changed?()
         projectDidChange()
     }
 
@@ -197,6 +209,8 @@ final class ProjectStore {
         let current = project
         project = snapshot
         registerUndo(restoring: current, actionName: actionName)
+        isSaving = true
+        changed?()
         projectDidChange()
     }
 
@@ -781,6 +795,9 @@ final class ProjectStore {
             showToast(Toast(kind: .failed, title: "Nothing to export", detail: "Add media to the timeline first."))
             return
         }
+        // A project with a picture exports as video unless you choose otherwise this time: an audio-only choice
+        // from an earlier export doesn't carry over to it.
+        if project.hasPicture { exportSettings.isAudioOnly = false }
         isExportSheetShown = true
     }
 
@@ -1043,6 +1060,78 @@ final class ProjectStore {
                 }
             }
         }
+    }
+
+    // MARK: Loops
+
+    /// Each video's frame prints, once read, for finding where it loops.
+    private(set) var framePrints: [UUID: FramePrints] = [:]
+    /// How far reading a video's frames has got, 0 to 1, while it's being read.
+    private(set) var loopProgress: [UUID: Double] = [:]
+    /// The best loops in each video once read. Empty when there are none, or the video couldn't be read.
+    private(set) var suggestedLoops: [UUID: [Loop]] = [:]
+    /// How often each video repeats, for those that do.
+    private(set) var repetitions: [UUID: Repetition] = [:]
+    /// The loop pointed at in the Video tab, shaded on its clip in the timeline.
+    var highlightedLoop: LoopHighlight?
+    @ObservationIgnored private var playheadLoops: (asset: UUID, frame: Int, loops: [Loop])?
+
+    /// Reads a video's frames and finds its best loops, once.
+    func findLoops(inAsset id: UUID) {
+        guard let asset = project.asset(id), asset.kind == .video, suggestedLoops[id] == nil, loopProgress[id] == nil else { return }
+        loopProgress[id] = 0
+        let url = mediaURL(for: asset)
+        Task {
+            let prints = await FramePrints.make(for: url) { [weak self] fraction in self?.loopProgress[id] = fraction }
+            let (repetition, loops) = await Self.loops(in: prints)
+            framePrints[id] = prints
+            repetitions[id] = repetition
+            suggestedLoops[id] = loops
+            loopProgress[id] = nil
+        }
+    }
+
+    @concurrent
+    private nonisolated static func loops(in prints: FramePrints?) async -> (Repetition?, [Loop]) {
+        guard let prints else { return (nil, []) }
+        return (prints.repetition(), prints.suggestedLoops())
+    }
+
+    /// Where loops of a clip start: the frame under the playhead, or its first frame when the playhead isn't on it.
+    private func loopStart(in clip: Clip) -> Double {
+        let time = playback.currentTime
+        return clip.start <= time && time < clip.end
+            ? clip.sourceStart.seconds + (time - clip.start).seconds * clip.speed : clip.sourceStart.seconds
+    }
+
+    /// Loops of one or more repeats of a video that repeats, starting where `loopStart` says.
+    func repeatingLoops(in clip: Clip) -> [Loop] {
+        guard let prints = framePrints[clip.assetID], let repetition = repetitions[clip.assetID] else { return [] }
+        return prints.loops(repeating: repetition, from: loopStart(in: clip))
+    }
+
+    /// The best places to loop a clip back to the frame under the playhead, or to its first frame when the
+    /// playhead isn't on it.
+    func loopsFromPlayhead(in clip: Clip) -> [Loop] {
+        guard let prints = framePrints[clip.assetID] else { return [] }
+        let frame = prints.index(at: loopStart(in: clip))
+        if let cached = playheadLoops, cached.asset == clip.assetID, cached.frame == frame { return cached.loops }
+        let loops = prints.loops(from: prints.times[frame])
+        playheadLoops = (clip.assetID, frame, loops)
+        return loops
+    }
+
+    /// Whether a clip plays exactly that loop now, to half a frame.
+    func plays(_ loop: Loop, in clip: Clip) -> Bool {
+        let tolerance = 0.5 / max(project.canvas?.frameRate ?? 30, 1)
+        let end = clip.sourceStart.seconds + clip.duration.seconds * clip.speed
+        return abs(clip.sourceStart.seconds - loop.start) < tolerance && abs(end - loop.end) < tolerance
+    }
+
+    /// Trims the selected clip to play one loop.
+    func trimToLoop(_ loop: Loop) {
+        guard selection.count == 1, let id = selection.first else { return }
+        apply("Trim to Loop") { $0.trimToLoop(id, from: Time(seconds: loop.start), to: Time(seconds: loop.end)) }
     }
 
     /// Works out the isolated waveform of each recording that has a clip with Isolate voice on, once.

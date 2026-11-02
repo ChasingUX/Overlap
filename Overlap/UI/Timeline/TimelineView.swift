@@ -577,6 +577,9 @@ final class TimelineView: NSView {
         let clips = project.tracks[track].clips.filter { $0.id != moving }.sorted { $0.start < $1.start }
         for clip in clips {
             drawClip(clip, in: clipRect(clip, in: row), selected: snapshot.selection.contains(clip.id), crossfades: gains)
+            if let highlight = snapshot.loopHighlight, highlight.clip == clip.id {
+                drawLoopHighlight(highlight, on: clip, in: clipRect(clip, in: row))
+            }
         }
         for crossfade in crossfades {
             drawCrossfade(crossfade, in: crossfadeRect(crossfade, in: row))
@@ -584,6 +587,24 @@ final class TimelineView: NSView {
         for clip in clips {
             let rect = clipRect(clip, in: row)
             if showsFadeHandles(clip, track: track, in: rect) { drawFadeHandles(clip, edges: fadeEdges(of: clip, crossfades: crossfades), in: rect) }
+        }
+        NSGraphicsContext.restoreGraphicsState()
+    }
+
+    /// The part of a clip a loop would keep, shaded in the accent color, with a bar at each end of it that falls
+    /// inside the clip.
+    private func drawLoopHighlight(_ highlight: LoopHighlight, on clip: Clip, in rect: CGRect) {
+        let from = x(for: clip.start + Time(seconds: (highlight.start - clip.sourceStart.seconds) / clip.speed))
+        let to = x(for: clip.start + Time(seconds: (highlight.end - clip.sourceStart.seconds) / clip.speed))
+        let band = CGRect(x: from, y: rect.minY, width: max(0, to - from), height: rect.height).intersection(rect)
+        guard !band.isNull, band.width > 0 else { return }
+        NSGraphicsContext.saveGraphicsState()
+        NSBezierPath(roundedRect: rect, xRadius: 8, yRadius: 8).addClip()
+        NSColor.controlAccentColor.withAlphaComponent(0.28).setFill()
+        band.fill()
+        NSColor.controlAccentColor.setFill()
+        for edge in [from, to - 2] where edge > rect.minX + 1 && edge < rect.maxX - 3 {
+            CGRect(x: edge, y: rect.minY, width: 2, height: rect.height).fill()
         }
         NSGraphicsContext.restoreGraphicsState()
     }

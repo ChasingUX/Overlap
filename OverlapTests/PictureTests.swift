@@ -286,6 +286,24 @@ struct PictureTests {
         #expect(try pixel(rendered, x: 0.5, y: 0.74).isClose(to: .white, within: 0.15))
     }
 
+    @Test func darkTonesComeThroughUnchanged() async throws {
+        // How the compositor reads frames and how it writes them have to agree, or the picture lightens or
+        // darkens, most of all in its darker tones.
+        let gray = RGBA(red: 0.1, green: 0.1, blue: 0.12)
+        let url = try await makeVideo(gray)
+        let video = asset(url, kind: .video)
+        var project = Project()
+        project.assets = [video]
+        project.tracks[0].clips = [clip(video)]
+        let composited = try await pixel(frame(of: project, urls: [video.id: url], at: 1), x: 0.5, y: 0.5)
+        let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url))
+        generator.requestedTimeToleranceBefore = .zero
+        generator.requestedTimeToleranceAfter = .zero
+        let original = try pixel(try await generator.image(at: CMTime(seconds: 1, preferredTimescale: 600)).image, x: 0.5, y: 0.5)
+        #expect(abs(composited.red - original.red) < 0.02)
+        #expect(abs(composited.blue - original.blue) < 0.02)
+    }
+
     @Test func theBlankTrackHasAFrameForEveryFrame() async throws {
         // Text over nothing else: the blank track is the only video under it, and a paused player only draws again
         // when the frame under the playhead changes. Stretched, one frame would cover everything, and the text

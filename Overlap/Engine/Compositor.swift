@@ -309,7 +309,10 @@ final class Compositor: NSObject, AVVideoCompositing, @unchecked Sendable {
     ])
     private var renderer: FrameRenderer { Self.renderer }
     private var context: CIContext { Self.context }
-    private static let outputColorSpace = CGColorSpace(name: CGColorSpace.itur_709)!
+    /// AVFoundation labels the compositor's frames Core Media 709, its Rec. 709 for video, so they're written in
+    /// that. Plain Rec. 709 has a different curve near black: frames written in it come out lighter than their
+    /// sources, in the preview and in exports, most of all in dark tones.
+    private static let outputColorSpace = CGColorSpace(name: CGColorSpace.coreMedia709)!
 
     let sourcePixelBufferAttributes: [String: any Sendable]? = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
     let requiredPixelBufferAttributesForRenderContext: [String: any Sendable] = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]

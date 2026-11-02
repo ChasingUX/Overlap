@@ -17,9 +17,30 @@ final class ProjectDocument: NSDocument {
         store = ProjectStore(mediaDirectory: staging)
         super.init()
         store.undoManager = undoManager
+        store.changed = { [weak self] in self?.autosaveSoon() }
+    }
+
+    private var pendingAutosave: Task<Void, Never>?
+
+    /// Saves a moment after the last change rather than whenever AppKit gets round to it, so "Saving…" beside the
+    /// title means a save is coming. A burst of edits makes one save.
+    private func autosaveSoon() {
+        pendingAutosave?.cancel()
+        pendingAutosave = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(1.5))
+            guard let self, !Task.isCancelled, hasUnautosavedChanges else { return }
+            autosave(withImplicitCancellability: false) { _ in }
+        }
     }
 
     override class var autosavesInPlace: Bool { true }
+
+    /// Any save but a copy ends "Saving…" beside the title, unless something changed while it was saving.
+    override func updateChangeCount(withToken changeCountToken: Any, for saveOperation: NSDocument.SaveOperationType) {
+        super.updateChangeCount(withToken: changeCountToken, for: saveOperation)
+        guard saveOperation != .saveToOperation else { return }
+        MainActor.assumeIsolated { store.savingFinished(unsaved: hasUnautosavedChanges) }
+    }
 
     /// A saved project that's moved or renamed reads its media from its new place. The first save into a
     /// location is handled in `save(to:ofType:for:completionHandler:)`.
@@ -188,6 +209,10 @@ final class ProjectDocument: NSDocument {
         store.playback.pause()
     }
 
+    @objc func toggleLoopPlayback(_ sender: Any?) {
+        store.playback.loopsPlayback.toggle()
+    }
+
     @objc func playForward(_ sender: Any?) {
         store.playback.shuttle(forward: true)
     }
@@ -219,6 +244,8 @@ final class ProjectDocument: NSDocument {
             return false
         }
         switch menuItem.action {
+        case #selector(toggleLoopPlayback(_:)):
+            menuItem.state = store.playback.loopsPlayback ? .on : .off
         case #selector(togglePlayback(_:)):
             menuItem.title = store.playback.isPlaying ? "Pause" : "Play"
         case #selector(togglePanel(_:)):

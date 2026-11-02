@@ -10,8 +10,16 @@ final class PlaybackController {
     private(set) var currentTime: Time = .zero
     private(set) var duration: Time = .zero
 
+    /// Whether playing past the end starts again from the beginning. New windows take the last choice.
+    var loopsPlayback = UserDefaults.standard.bool(forKey: "loopsPlayback") {
+        didSet { UserDefaults.standard.set(loopsPlayback, forKey: "loopsPlayback") }
+    }
+
     @ObservationIgnored private var timeObserver: Any?
     @ObservationIgnored private var rateObservation: NSKeyValueObservation?
+    @ObservationIgnored private var endObserver: NSObjectProtocol?
+    /// The speed of the last forward play, which a loop carries on at.
+    @ObservationIgnored private var forwardRate: Float = 1
     /// Counts composition swaps. While the latest swap's seek is pending, the new item reports 0:00,
     /// which would flash the playhead to the start; those reports are ignored.
     @ObservationIgnored private var swapGeneration = 0
@@ -47,11 +55,27 @@ final class PlaybackController {
             }
         }
         rateObservation = player.observe(\.rate, options: [.new]) { [weak self] _, change in
-            let playing = (change.newValue ?? 0) != 0
+            let rate = change.newValue ?? 0
             Task { @MainActor in
-                self?.isPlaying = playing
+                self?.isPlaying = rate != 0
+                if rate > 0 { self?.forwardRate = rate }
             }
         }
+        endObserver = NotificationCenter.default.addObserver(forName: AVPlayerItem.didPlayToEndTimeNotification, object: nil, queue: .main) { [weak self] notification in
+            let ended = (notification.object as AnyObject?).map(ObjectIdentifier.init)
+            MainActor.assumeIsolated {
+                guard let self, self.loopsPlayback, let current = self.player.currentItem, ended == ObjectIdentifier(current) else { return }
+                self.loopToStart()
+            }
+        }
+    }
+
+    /// Played to the end with Loop on: back to the start, playing on at the same speed. The rate is set first, so
+    /// the player starts the moment the seek lands instead of waiting to be told after.
+    private func loopToStart() {
+        currentTime = .zero
+        player.rate = forwardRate
+        player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero)
     }
 
     /// What the current composition's compositor draws, for showing look changes without a rebuild.

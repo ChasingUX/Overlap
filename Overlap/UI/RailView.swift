@@ -35,7 +35,7 @@ struct RailView: View {
             tab.icon.image
                 .font(.system(size: 16))
                 .frame(width: 30, height: 30)
-                .foregroundStyle(isActive ? Color.white : (isHovered ? Color.primary.opacity(0.85) : Color.secondary))
+                .foregroundStyle(isActive ? Color.white : Color.primary.opacity(isHovered ? 0.85 : 0.4))
                 .background(RoundedRectangle(cornerRadius: 7).fill(fill))
                 .overlay(alignment: .topTrailing) {
                     if applies {

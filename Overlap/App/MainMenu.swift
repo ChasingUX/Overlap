@@ -120,6 +120,7 @@ enum MainMenu {
         menu.addItem(item("Play Backward", #selector(ProjectDocument.playBackward(_:)), "j", []))
         menu.addItem(item("Pause", #selector(ProjectDocument.pausePlayback(_:)), "k", []))
         menu.addItem(item("Play Forward", #selector(ProjectDocument.playForward(_:)), "l", []))
+        menu.addItem(item("Loop Playback", #selector(ProjectDocument.toggleLoopPlayback(_:)), "l"))
         menu.addItem(.separator())
         menu.addItem(item("Previous Frame", #selector(ProjectDocument.previousFrame(_:)), functionKey(NSLeftArrowFunctionKey), []))
         menu.addItem(item("Next Frame", #selector(ProjectDocument.nextFrame(_:)), functionKey(NSRightArrowFunctionKey), []))

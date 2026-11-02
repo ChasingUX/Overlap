@@ -110,11 +110,6 @@ final class ProjectWindowController: NSWindowController, NSToolbarDelegate, NSWi
         store.windowTitle = document?.fileURL?.deletingPathExtension().lastPathComponent ?? document?.displayName ?? "Untitled"
     }
 
-    override func setDocumentEdited(_ dirtyFlag: Bool) {
-        super.setDocumentEdited(dirtyFlag)
-        store.isEdited = dirtyFlag
-    }
-
     // MARK: Toolbar
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
@@ -143,7 +138,7 @@ final class ProjectWindowController: NSWindowController, NSToolbarDelegate, NSWi
     }
 }
 
-/// The project name, with "Edited" beside it while there are unsaved changes. Hovering shows a rounded
+/// The project name, with "Saving…" beside it while changes wait for the autosave. Hovering shows a rounded
 /// background; clicking edits the name in place. Return, or a click anywhere else, renames the project.
 private struct WindowTitle: View {
     @Bindable var store: ProjectStore
@@ -173,8 +168,8 @@ private struct WindowTitle: View {
                 HStack(spacing: 8) {
                     Text(store.windowTitle)
                         .foregroundStyle(.primary)
-                    if store.isEdited {
-                        Text("Edited")
+                    if store.isSaving {
+                        Text("Saving…")
                             .foregroundStyle(.secondary)
                     }
                 }

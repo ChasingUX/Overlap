@@ -79,6 +79,10 @@ struct VideoPanel: View {
                     SpeedSection(store: store)
                 }
             }
+
+            if store.selectedClips.count == 1, clip.title == nil, store.project.asset(clip.assetID)?.kind == .video {
+                LoopSection(store: store, clip: clip)
+            }
         }
     }
 
