@@ -7,13 +7,15 @@
 		<dict>
 			<key>CFBundleTypeName</key>
 			<string>Overlap Project</string>
+			<key>CFBundleTypeIconSystemGenerated</key>
+			<true/>
 			<key>CFBundleTypeRole</key>
 			<string>Editor</string>
 			<key>LSHandlerRank</key>
 			<string>Owner</string>
 			<key>LSItemContentTypes</key>
 			<array>
-				<string>com.example.overlap.project</string>
+				<string>com.chasingux.overlap.project</string>
 			</array>
 			<key>LSTypeIsPackage</key>
 			<true/>
@@ -25,7 +27,7 @@
 	<array>
 		<dict>
 			<key>UTTypeIdentifier</key>
-			<string>com.example.overlap.project</string>
+			<string>com.chasingux.overlap.project</string>
 			<key>UTTypeDescription</key>
 			<string>Overlap Project</string>
 			<key>UTTypeConformsTo</key>
@@ -42,5 +44,14 @@
 			</dict>
 		</dict>
 	</array>
+	<!-- Updates, with Sparkle, from the feed on the repository's GitHub Pages. Every installed copy keeps this
+	     address, so before the feed moves, ship a release that points at the new one. Updates are checked against
+	     the public key; the private key stays with whoever makes releases. -->
+	<key>SUFeedURL</key>
+	<string>https://chasingux.github.io/Overlap/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>9Ctseal5dSFiAIHZeKmNZbdQ/u3YJCaBM5wtgKMsO3U=</string>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
 </dict>
 </plist>

@@ -40,6 +40,9 @@ enum MainMenu {
     private static func appMenu() -> NSMenu {
         let menu = NSMenu(title: "Overlap")
         menu.addItem(item("About Overlap", #selector(NSApplication.orderFrontStandardAboutPanel(_:))))
+        let updates = item("Check for Updates…", #selector(Updates.checkForUpdates(_:)))
+        updates.target = Updates.shared
+        menu.addItem(updates)
         menu.addItem(.separator())
         menu.addItem(item("Hide Overlap", #selector(NSApplication.hide(_:)), "h"))
         menu.addItem(item("Hide Others", #selector(NSApplication.hideOtherApplications(_:)), "h", [.command, .option]))

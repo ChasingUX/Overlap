@@ -18,12 +18,12 @@ struct DocumentTests {
             project.addClip(asset: asset.id, at: Time(seconds: 1), preferredTrack: 0)
         }
 
-        try document.write(to: package, ofType: "com.example.overlap.project", for: .saveOperation, originalContentsURL: nil)
+        try document.write(to: package, ofType: "com.chasingux.overlap.project", for: .saveOperation, originalContentsURL: nil)
         #expect(FileManager.default.fileExists(atPath: package.appending(path: "Project.json").path))
         #expect(try Data(contentsOf: package.appending(path: "Media/song.m4a")) == Data("media".utf8))
 
         let reopened = ProjectDocument()
-        try reopened.read(from: package, ofType: "com.example.overlap.project")
+        try reopened.read(from: package, ofType: "com.chasingux.overlap.project")
         #expect(reopened.store.project == document.store.project)
         #expect(reopened.store.mediaURL(for: asset).path == package.appending(path: "Media/song.m4a").path)
     }
@@ -37,7 +37,7 @@ struct DocumentTests {
         document.store.apply("Import Media") { $0.assets.append(asset) }
         document.store.removeAsset(asset.id)
 
-        try document.write(to: package, ofType: "com.example.overlap.project", for: .saveOperation, originalContentsURL: nil)
+        try document.write(to: package, ofType: "com.chasingux.overlap.project", for: .saveOperation, originalContentsURL: nil)
         #expect(!FileManager.default.fileExists(atPath: package.appending(path: "Media/old.wav").path))
     }
 }
