@@ -202,7 +202,8 @@ private struct FrameControls: View {
 }
 
 /// Background swatches: None, built-in colors, saved custom colors, gradients and wallpapers, then + for a color
-/// of your own, and a way to add wallpapers. Swatches drag onto the timeline as background clips.
+/// of your own and an eyedropper for one from the screen, and a way to add wallpapers. Swatches drag onto the
+/// timeline as background clips.
 struct BackgroundPicker: View {
     let store: ProjectStore
     let selected: BackgroundFill?
@@ -246,6 +247,11 @@ struct BackgroundPicker: View {
                 .frame(height: 26)
                 .accessibilityLabel("Custom color")
                 .help("Choose a color of your own")
+                EyedropperSwatch { color in
+                    WallpaperLibrary.remember(color)
+                    onSelect(.color(color))
+                }
+                .frame(height: 26)
             }
             .padding(8)
             .background(ControlBox())

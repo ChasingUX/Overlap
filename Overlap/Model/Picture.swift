@@ -39,7 +39,7 @@ enum BackgroundFill: Hashable, Sendable, Codable {
     case wallpaper(UUID)
 
     /// Built-in swatches, shown first in the Canvas tab.
-    static let colors: [BackgroundFill] = [0x0C0B10, 0xF5F5F7, 0x1C1C1E, 0x2C3E50, 0x1E3A8A, 0x0F766E, 0xB45309, 0x9F1239]
+    static let colors: [BackgroundFill] = [0x0C0B10, 0xF5F5F7, 0x1C1C1E, 0x2C3E50, 0x1E3A8A, 0x0F766E]
         .map { .color(RGBA(hex: $0)) }
     static let gradients: [BackgroundFill] = [
         (0x4F46E5, 0xEC4899), (0x0EA5E9, 0x22C55E), (0xF97316, 0xEF4444), (0x111827, 0x4B5563),

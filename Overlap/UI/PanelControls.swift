@@ -356,6 +356,38 @@ struct AddColorSwatch: NSViewRepresentable {
     }
 }
 
+/// A swatch with an eyedropper, for a color from anywhere on screen: it opens the system's magnifier, and a click
+/// picks the color under it. Escape changes nothing.
+struct EyedropperSwatch: View {
+    let onPick: (RGBA) -> Void
+
+    var body: some View {
+        Button {
+            NSColorSampler().show { picked in
+                guard let srgb = picked?.usingColorSpace(.sRGB) else { return }
+                let color = RGBA(red: srgb.redComponent, green: srgb.greenComponent, blue: srgb.blueComponent)
+                MainActor.assumeIsolated { onPick(color) }
+            }
+        } label: {
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(Color.primary.opacity(0.06))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .strokeBorder(Color.primary.opacity(0.12))
+                }
+                .overlay {
+                    Image(systemName: "eyedropper")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.secondary)
+                }
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Pick a color from the screen")
+        .accessibilityLabel("Pick a color from the screen")
+    }
+}
+
 final class AddColorWell: NSColorWell {
     var onChange: ((RGBA) -> Void)?
     var onCommit: ((RGBA, RGBA?) -> Void)?
