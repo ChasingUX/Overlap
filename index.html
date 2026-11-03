@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Overlap</title>
+<link rel="icon" type="image/png" href="icon.png">
+<!-- The install page on the repository's GitHub Pages. Scripts/publish-release.sh copies it there with each
+     release; the version shown comes from the update feed beside it. -->
+<style>
+  :root {
+    --background: #101012;
+    --surface: #1b1b1e;
+    --text: #f2f2f4;
+    --secondary: #a1a1a8;
+    --accent: #2f7bf6;
+    --line: rgba(255, 255, 255, 0.08);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--background);
+    color: var(--text);
+    font: 16px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+  }
+  main { max-width: 640px; margin: 0 auto; padding: 72px 16px 96px; }
+  .icon { display: block; width: 128px; height: 128px; margin: 0 0 20px -8px; }
+  h1 { font-size: 40px; line-height: 1.1; margin: 0 0 8px; letter-spacing: -0.02em; }
+  .lede { color: var(--secondary); margin: 0 0 32px; }
+  .download {
+    display: inline-block;
+    padding: 12px 22px;
+    border-radius: 999px;
+    background: var(--accent);
+    color: #fff;
+    font-weight: 600;
+    text-decoration: none;
+  }
+  .download:hover { filter: brightness(1.08); }
+  .meta { color: var(--secondary); font-size: 14px; margin: 12px 0 48px; }
+  h2 { font-size: 18px; margin: 0 0 16px; }
+  ol { margin: 0 0 32px; padding-left: 22px; }
+  li { margin-bottom: 10px; }
+  li::marker { color: var(--secondary); }
+  strong { font-weight: 600; }
+  .note {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 16px 18px;
+    color: var(--secondary);
+    font-size: 14px;
+  }
+  code {
+    display: block;
+    margin-top: 10px;
+    padding: 10px 12px;
+    border-radius: 8px;
+    background: var(--background);
+    color: var(--text);
+    font: 13px/1.4 ui-monospace, "SF Mono", Menlo, monospace;
+    overflow-x: auto;
+    white-space: nowrap;
+  }
+</style>
+</head>
+<body>
+<main>
+  <img class="icon" src="icon.png" alt="">
+  <h1>Overlap</h1>
+  <p class="lede">A video and audio editor for Mac.</p>
+  <a class="download" href="Overlap.zip">Download Overlap</a>
+  <p class="meta"><span id="version">The latest version</span> · Requires macOS 27</p>
+
+  <h2>Installing</h2>
+  <ol>
+    <li>Open <strong>Overlap.zip</strong> and drag <strong>Overlap</strong> into your <strong>Applications</strong> folder.</li>
+    <li>Open it. macOS says it can't check Overlap for malicious software, because Overlap isn't registered with Apple. Click <strong>Done</strong>.</li>
+    <li>Open <strong>System Settings › Privacy &amp; Security</strong>, scroll to the message about Overlap, and click <strong>Open Anyway</strong>. Confirm with your password.</li>
+  </ol>
+  <p>You only do this once. New versions install themselves: Overlap checks once a day, or choose <strong>Overlap › Check for Updates…</strong>.</p>
+
+  <div class="note">
+    Comfortable with Terminal? This does steps 2 and 3 in one go, after step 1:
+    <code>xattr -dr com.apple.quarantine /Applications/Overlap.app</code>
+  </div>
+</main>
+<script>
+  // The newest version is the feed's first item.
+  fetch("appcast.xml")
+    .then((response) => response.text())
+    .then((text) => {
+      const feed = new DOMParser().parseFromString(text, "application/xml");
+      const version = feed.getElementsByTagNameNS("http://www.andymatuschak.org/xml-namespaces/sparkle", "shortVersionString")[0];
+      if (version) document.getElementById("version").textContent = "Version " + version.textContent;
+    })
+    .catch(() => {});
+</script>
+</body>
+</html>

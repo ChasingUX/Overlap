@@ -1,0 +1,14 @@
+<?xml version="1.0" standalone="yes"?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+    <channel>
+        <title>Overlap</title>
+        <item>
+            <title>0.1.0</title>
+            <pubDate>Tue, 03 Nov 2026 09:38:38 -0800</pubDate>
+            <sparkle:version>8</sparkle:version>
+            <sparkle:shortVersionString>0.1.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>27.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://chasingux.github.io/Overlap/updates/Overlap-0.1.0.zip" length="2602625" type="application/octet-stream" sparkle:edSignature="ZDKGeiCy4vS14Rb3MpkK6VAtrORNwPIKye+qHzM5pScRkG04cnvB2AN5HeAUuDODCaoPNgRlPq/u5jR3PQi9DQ=="/>
+        </item>
+    </channel>
+</rss>
