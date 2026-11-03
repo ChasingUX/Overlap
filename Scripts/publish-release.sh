@@ -46,9 +46,11 @@ else
     git -C "$site" push -q -u origin gh-pages
 fi
 
-# The first time, turn GitHub Pages on for the branch.
+# The first time, turn GitHub Pages on for the branch. GitHub may already have done it on its own when the branch
+# first arrived, and then answers that it's on.
 if ! gh api "repos/$repo/pages" > /dev/null 2>&1; then
-    gh api -X POST "repos/$repo/pages" -f "source[branch]=gh-pages" -f "source[path]=/" > /dev/null
+    gh api -X POST "repos/$repo/pages" -f "source[branch]=gh-pages" -f "source[path]=/" > /dev/null 2>&1 \
+        || gh api "repos/$repo/pages" > /dev/null
 fi
 
 echo "Published Overlap $version at $url"
