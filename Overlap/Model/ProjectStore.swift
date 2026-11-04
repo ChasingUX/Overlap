@@ -976,6 +976,12 @@ final class ProjectStore {
         }
     }
 
+    /// Resizes the canvas from the preview, keeping everything on it where it is. `frame` is in the current
+    /// canvas's pixels.
+    func resizeCanvas(to frame: CGRect) {
+        apply("Resize Canvas") { $0.resizeCanvas(to: frame) }
+    }
+
     /// A new canvas size. A fixed shape stays chosen, since the Canvas tab keeps its proportions as you type. Auto
     /// gives way to the shape the size has, or Custom, since the size no longer follows the first video.
     func setCanvasSize(width: Int, height: Int) {

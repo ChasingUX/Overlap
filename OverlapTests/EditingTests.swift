@@ -224,3 +224,57 @@ struct CanvasSizeTests {
         #expect(store.project.canvas.map { [$0.width, $0.height] } == [2000, 1000])
     }
 }
+
+/// Resizing the canvas from the preview: what's on it keeps its place and size.
+struct CanvasResizeTests {
+    let square = Asset(id: UUID(), fileName: "s.mov", displayName: "s.mov", kind: .video, duration: Time(seconds: 5), hasAudio: false,
+                       pixelWidth: 1080, pixelHeight: 1080, frameRate: 30)
+
+    /// Where a media clip shows, in canvas pixels: its center and width.
+    func shown(_ clip: Clip, on canvas: Canvas) -> (x: Double, y: Double, width: Double) {
+        let fit = min(Double(canvas.width) / 1080, Double(canvas.height) / 1080)
+        return (Double(canvas.width) / 2 + clip.visual.x * Double(canvas.width), Double(canvas.height) / 2 + clip.visual.y * Double(canvas.height),
+                1080 * fit * clip.visual.scale)
+    }
+
+    func project() -> Project {
+        var project = Project()
+        project.assets = [square]
+        project.canvas = Canvas(width: 1920, height: 1080, frameRate: 30)
+        project.canvasAspect = .wide
+        var clip = Clip(assetID: square.id, start: .zero, sourceStart: .zero, duration: Time(seconds: 5))
+        // Against the left edge, as tall as the canvas.
+        clip.visual.x = (540 - 960) / 1920.0
+        project.tracks[0].clips = [clip]
+        return project
+    }
+
+    @Test func cuttingTheRightSideKeepsThePictureWhereItIs() throws {
+        var project = project()
+        project.resizeCanvas(to: CGRect(x: 0, y: 0, width: 1080, height: 1080))
+        let canvas = try #require(project.canvas)
+        #expect(canvas.width == 1080 && canvas.height == 1080)
+        #expect(project.canvasAspect == .custom)
+        let after = shown(project.tracks[0].clips[0], on: canvas)
+        #expect(abs(after.x - 540) < 1e-6 && abs(after.y - 540) < 1e-6 && abs(after.width - 1080) < 1e-6)
+    }
+
+    @Test func growingBothSidesKeepsThePictureWhereItIs() throws {
+        var project = project()
+        let before = shown(project.tracks[0].clips[0], on: try #require(project.canvas))
+        project.resizeCanvas(to: CGRect(x: -200, y: -100, width: 2320, height: 1280))
+        let canvas = try #require(project.canvas)
+        let after = shown(project.tracks[0].clips[0], on: canvas)
+        // The same place, measured from the old canvas's corner, and the same size.
+        #expect(abs(after.x - 200 - before.x) < 1e-6 && abs(after.y - 100 - before.y) < 1e-6)
+        #expect(abs(after.width - before.width) < 1e-6)
+    }
+
+    @Test func textKeepsItsSize() throws {
+        var project = project()
+        let title = project.addTitle(Title(text: "Hi"), at: .zero, target: .existing(project.tracks[0].id))
+        project.resizeCanvas(to: CGRect(x: 0, y: 0, width: 1920, height: 2160))
+        // Text is drawn in proportion to the canvas's height, so twice the height takes half the scale.
+        #expect(abs((project.clip(title.id)?.visual.scale ?? 0) - 0.5) < 1e-9)
+    }
+}

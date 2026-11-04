@@ -1,4 +1,6 @@
 import AppKit
+import AVFoundation
+import CoreImage
 
 /// Handles over the preview for a picture clicked there: drag inside to move it, a corner to scale it (from the
 /// opposite corner, or from the middle with Option held), the top handle to rotate it, or in crop mode an edge
@@ -7,6 +9,8 @@ import AppKit
 /// into it right there. Selecting on the timeline
 /// doesn't show them. The overlay covers the whole preview, so handles off the canvas can still be grabbed.
 /// Drags show at once through the store's live preview and become one undo step on release.
+/// Holding ⌘ over the canvas's edge resizes the canvas instead (with ⌥, both sides at once), keeping everything on it
+/// where it is: while dragging, what falls outside shows faintly.
 final class TransformOverlay: NSView {
     struct State {
         var project: Project
@@ -53,6 +57,29 @@ final class TransformOverlay: NSView {
     /// Whether the drag is resting on a snap, so the trackpad taps once, as it catches.
     private var isSnapped = false
     private var titleSizes: [Title: CGSize] = [:]
+
+    /// The canvas being resized from one edge or corner: which way each side moves (−1 the left or top edge, 1 the
+    /// right or bottom, 0 neither), where the pointer started, the canvas being dragged to in the starting canvas's
+    /// pixels, and the picture drawn for it, across the old canvas and the new.
+    private struct CanvasResize {
+        var horizontal: Int
+        var vertical: Int
+        var from: CGPoint
+        var frame: CGRect
+        var frames: [CMPersistentTrackID: CIImage] = [:]
+        var ghost: CGImage?
+        /// Picture edges the dragged canvas edge has caught on, in the starting canvas's pixels.
+        var guides: (vertical: [CGFloat], horizontal: [CGFloat]) = ([], [])
+    }
+
+    private var canvasResize: CanvasResize?
+    #if DEBUG
+    /// While a debug check records a canvas resize: how often it was drawn, and how long each ghost took, in ms.
+    var debugResizeDraws = 0
+    var debugGhostTimes: [Double] = []
+    #endif
+    private var flagsMonitor: Any?
+    private var showsResizeCursor = false
 
     init(store: ProjectStore) {
         self.store = store
@@ -204,8 +231,27 @@ final class TransformOverlay: NSView {
         let down = nearest([box.minY, box.midY, box.maxY], to: lines.horizontal)
         if let across { snapped.x += across.shift / canvas.width }
         if let down { snapped.y += down.shift / canvas.height }
-        guides = (across.map { [$0.line] } ?? [], down.map { [$0.line] } ?? [])
+        showGuides(for: snapped, of: clip, lines: lines)
         return snapped
+    }
+
+    /// Lights every line the picture's edges and middle lie on once snapped. It can meet several at once: one as
+    /// tall as the canvas meets its top and its bottom together.
+    private func showGuides(for visual: Visual, of clip: Clip, lines: (vertical: [CGFloat], horizontal: [CGFloat])) {
+        guard let box = corners(of: clip, visual: visual).map(boundingBox) else {
+            guides = ([], [])
+            return
+        }
+        // Within half a point on screen counts as on the line.
+        let reach = 0.5 / max(0.001, viewScale * frameScale)
+        func met(_ low: CGFloat, _ middle: CGFloat, _ high: CGFloat, _ lines: [CGFloat]) -> [CGFloat] {
+            let meets = { (edge: CGFloat) in lines.filter { abs($0 - edge) <= reach } }
+            // With both edges on lines, the middle line says nothing more.
+            let ends = meets(low) + meets(high)
+            let mid = !meets(low).isEmpty && !meets(high).isEmpty ? [] : meets(middle)
+            return Array(Set(ends + mid)).sorted()
+        }
+        guides = (met(box.minX, box.midX, box.maxX, lines.vertical), met(box.minY, box.midY, box.maxY, lines.horizontal))
     }
 
     /// A picture scaled by `ratio` around a point that stays where it is.
@@ -236,8 +282,9 @@ final class TransformOverlay: NSView {
             }
         }
         guard let best else { return visual }
-        guides = (best.vertical.map { [$0] } ?? [], best.horizontal.map { [$0] } ?? [])
-        return scaled(visual, by: best.ratio, around: pivot)
+        let snapped = scaled(visual, by: best.ratio, around: pivot)
+        showGuides(for: snapped, of: clip, lines: lines)
+        return snapped
     }
 
     // MARK: Typing on the canvas
@@ -277,11 +324,11 @@ final class TransformOverlay: NSView {
     // MARK: Drawing
 
     override func draw(_ dirtyRect: NSRect) {
-        drawGuides()
+        if let canvasResize { return drawCanvasResize(canvasResize) }
         // The editor stands in for the handles while text is typed.
-        guard titleEditor == nil, let clip = selectedClip else { return }
+        guard titleEditor == nil, let clip = selectedClip else { return drawGuides() }
         let visual = visual(of: clip)
-        guard let points = corners(of: clip, visual: visual)?.map(view) else { return }
+        guard let points = corners(of: clip, visual: visual)?.map(view) else { return drawGuides() }
 
         if state?.isCropping == true, clip.title == nil, let full = corners(of: clip, visual: visual, whole: true)?.map(view) {
             outline(full, dashed: true)
@@ -293,6 +340,8 @@ final class TransformOverlay: NSView {
         }
 
         outline(points, dashed: false)
+        // Over the outline, so a guide along the picture's own edge shows, and under the handles.
+        drawGuides()
         let top = CGPoint(x: (points[0].x + points[1].x) / 2, y: (points[0].y + points[1].y) / 2)
         let rotation = rotationHandle(points)
         let stem = NSBezierPath()
@@ -398,7 +447,304 @@ final class TransformOverlay: NSView {
         if let titleEditor {
             return titleEditor.frame.contains(local) ? super.hitTest(point) : self
         }
+        // ⌘ as the click being placed has it, which is the keyboard's when it's a person's.
+        let flags = NSApplication.shared.currentEvent?.modifierFlags ?? NSEvent.modifierFlags
+        if flags.contains(.command), canvasEdges(at: local) != nil { return self }
         return selectedClip != nil || target(at: local) != nil ? self : nil
+    }
+
+    // MARK: Resizing the canvas
+
+    /// The canvas edges within reach of a point: −1 for the left or top, 1 for the right or bottom, 0 for neither.
+    private func canvasEdges(at point: CGPoint) -> (horizontal: Int, vertical: Int)? {
+        let reach: CGFloat = 6
+        guard canvasRect.width > 0, canvasRect.insetBy(dx: -reach, dy: -reach).contains(point) else { return nil }
+        let horizontal = abs(point.x - canvasRect.minX) <= reach ? -1 : abs(point.x - canvasRect.maxX) <= reach ? 1 : 0
+        let vertical = abs(point.y - canvasRect.minY) <= reach ? -1 : abs(point.y - canvasRect.maxY) <= reach ? 1 : 0
+        return horizontal == 0 && vertical == 0 ? nil : (horizontal, vertical)
+    }
+
+    private func resizeCursor(_ edges: (horizontal: Int, vertical: Int)) -> NSCursor {
+        let position: NSCursor.FrameResizePosition = switch (edges.horizontal, edges.vertical) {
+        case (-1, -1): .topLeft
+        case (1, -1): .topRight
+        case (-1, 1): .bottomLeft
+        case (1, 1): .bottomRight
+        case (-1, _): .left
+        case (1, _): .right
+        case (_, -1): .top
+        default: .bottom
+        }
+        return NSCursor.frameResize(position: position, directions: .all)
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
+                                       owner: self))
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        // Pressing or letting go of ⌘ over an edge changes the pointer without moving it.
+        guard flagsMonitor == nil else { return }
+        flagsMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
+            if let self, let window = self.window {
+                self.updateResizeCursor(at: self.convert(window.mouseLocationOutsideOfEventStream, from: nil), flags: event.modifierFlags)
+            }
+            return event
+        }
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        if let flagsMonitor { NSEvent.removeMonitor(flagsMonitor) }
+        flagsMonitor = nil
+        if canvasResize == nil { updateResizeCursor(at: CGPoint(x: -1000, y: -1000), flags: []) }
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        updateResizeCursor(at: convert(event.locationInWindow, from: nil), flags: event.modifierFlags)
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil, let flagsMonitor {
+            NSEvent.removeMonitor(flagsMonitor)
+            self.flagsMonitor = nil
+        }
+    }
+
+    private func updateResizeCursor(at point: CGPoint, flags: NSEvent.ModifierFlags) {
+        guard canvasResize == nil else { return }
+        if flags.contains(.command), titleEditor == nil, let edges = canvasEdges(at: point) {
+            resizeCursor(edges).set()
+            showsResizeCursor = true
+        } else if showsResizeCursor {
+            NSCursor.arrow.set()
+            showsResizeCursor = false
+        }
+    }
+
+    private func beginCanvasResize(_ edges: (horizontal: Int, vertical: Int), at point: CGPoint) {
+        canvasResize = CanvasResize(horizontal: edges.horizontal, vertical: edges.vertical, from: point,
+                                    frame: CGRect(origin: .zero, size: canvas))
+        resizeCursor(edges).set()
+        needsDisplay = true
+        // The player only draws inside the canvas, so the picture across the old canvas and the new is drawn here,
+        // once the video frames showing now are read from their files.
+        Task { [weak self] in
+            guard let self else { return }
+            let frames = await videoFrames()
+            guard canvasResize != nil else { return }
+            canvasResize?.frames = frames
+            drawGhost()
+        }
+    }
+
+    private func dragCanvas(to point: CGPoint, bothSides: Bool) {
+        guard var resize = canvasResize, viewScale > 0 else { return }
+        let dx = (point.x - resize.from.x) / viewScale
+        let dy = (point.y - resize.from.y) / viewScale
+        var minX: CGFloat = 0, maxX = canvas.width, minY: CGFloat = 0, maxY = canvas.height
+        switch resize.horizontal {
+        case -1: minX += dx; if bothSides { maxX -= dx }
+        case 1: maxX += dx; if bothSides { minX -= dx }
+        default: break
+        }
+        switch resize.vertical {
+        case -1: minY += dy; if bothSides { maxY -= dy }
+        case 1: maxY += dy; if bothSides { minY -= dy }
+        default: break
+        }
+        // A dragged edge catches on the edges of the pictures showing now, and a guide lights there. With ⌥ the
+        // opposite edge mirrors it.
+        var guides: (vertical: [CGFloat], horizontal: [CGFloat]) = ([], [])
+        if store.isSnappingEnabled {
+            let edges = pictureEdges()
+            let reach = 6 / viewScale
+            let caught = { (value: CGFloat, lines: [CGFloat]) in
+                lines.filter { abs($0 - value) <= reach }.min { abs($0 - value) < abs($1 - value) }
+            }
+            if resize.horizontal == -1, let line = caught(minX, edges.vertical) {
+                minX = line
+                if bothSides { maxX = canvas.width - line }
+                guides.vertical.append(line)
+            } else if resize.horizontal == 1, let line = caught(maxX, edges.vertical) {
+                maxX = line
+                if bothSides { minX = canvas.width - line }
+                guides.vertical.append(line)
+            }
+            if resize.vertical == -1, let line = caught(minY, edges.horizontal) {
+                minY = line
+                if bothSides { maxY = canvas.height - line }
+                guides.horizontal.append(line)
+            } else if resize.vertical == 1, let line = caught(maxY, edges.horizontal) {
+                maxY = line
+                if bothSides { minY = canvas.height - line }
+                guides.horizontal.append(line)
+            }
+        }
+        // A tap on a Force Touch trackpad as it catches, as when dragging a picture.
+        let wasCaught = !resize.guides.vertical.isEmpty || !resize.guides.horizontal.isEmpty
+        if !guides.vertical.isEmpty || !guides.horizontal.isEmpty, !wasCaught {
+            NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+        }
+        resize.guides = guides
+        // Never thinner than a sliver: the edge being dragged stops, or both stop around the middle.
+        let smallest: CGFloat = 64
+        if maxX - minX < smallest {
+            if bothSides { (minX, maxX) = ((minX + maxX - smallest) / 2, (minX + maxX + smallest) / 2) }
+            else if resize.horizontal == -1 { minX = maxX - smallest } else { maxX = minX + smallest }
+        }
+        if maxY - minY < smallest {
+            if bothSides { (minY, maxY) = ((minY + maxY - smallest) / 2, (minY + maxY + smallest) / 2) }
+            else if resize.vertical == -1 { minY = maxY - smallest } else { maxY = minY + smallest }
+        }
+        resize.frame = CGRect(x: minX, y: minY, width: min(maxX - minX, 8192), height: min(maxY - minY, 8192))
+        canvasResize = resize
+        // The new edge follows the pointer whether or not there's a picture to draw.
+        needsDisplay = true
+        drawGhost()
+    }
+
+    /// The left and right, and top and bottom, edges of the pictures showing now, in canvas pixels as they're drawn,
+    /// through the frame's inset.
+    private func pictureEdges() -> (vertical: [CGFloat], horizontal: [CGFloat]) {
+        var vertical: [CGFloat] = []
+        var horizontal: [CGFloat] = []
+        for clip in visibleClips {
+            guard let box = corners(of: clip, visual: clip.visual).map(boundingBox) else { continue }
+            let shown = { (value: CGFloat, middle: CGFloat) in middle + (value - middle) * self.frameScale }
+            vertical += [shown(box.minX, canvas.width / 2), shown(box.maxX, canvas.width / 2)]
+            horizontal += [shown(box.minY, canvas.height / 2), shown(box.maxY, canvas.height / 2)]
+        }
+        return (vertical, horizontal)
+    }
+
+    /// The picture at the playhead across the old canvas and the new one, everything placed as it will be: what
+    /// the new canvas keeps draws as it is, and the rest faintly.
+    private func drawGhost() {
+        guard var resize = canvasResize, let project = state?.project else { return }
+        let union = resize.frame.union(CGRect(origin: .zero, size: canvas))
+        // With nothing to play there's no plan yet: just the background, or the bare canvas, as the stage shows it.
+        guard let plan = store.playback.plan?.current else {
+            let stage = RenderPlan(canvas: union.size, background: project.background.flatMap(store.resolve), frame: project.frame,
+                                   layers: [], hiddenClip: nil)
+            resize.ghost = Compositor.stage(for: stage)
+            canvasResize = resize
+            needsDisplay = true
+            return
+        }
+        var ghost = plan
+        ghost.canvas = union.size
+        ghost.layers = plan.layers.map { layer in
+            var layer = layer
+            if !layer.isBackground, let clip = project.clip(layer.clipID) {
+                layer.visual = project.visual(of: clip, keptFrom: canvas, onto: union)
+            }
+            return layer
+        }
+        #if DEBUG
+        let started = Date()
+        #endif
+        resize.ghost = Compositor.still(of: ghost, at: store.playback.currentTime.seconds, frames: resize.frames,
+                                        scale: viewScale * (window?.backingScaleFactor ?? 2))
+        #if DEBUG
+        debugGhostTimes.append((Date().timeIntervalSince(started) * 1000).rounded())
+        #endif
+        canvasResize = resize
+        needsDisplay = true
+    }
+
+    /// The video frames showing now, read from their files, by composition track.
+    private func videoFrames() async -> [CMPersistentTrackID: CIImage] {
+        guard let plan = store.playback.plan?.current, let project = state?.project else { return [:] }
+        let time = store.playback.currentTime.seconds
+        var frames: [CMPersistentTrackID: CIImage] = [:]
+        for layer in plan.layers where layer.isActive(at: time) {
+            guard case let .video(trackID, _) = layer.source, let clip = project.clip(layer.clipID),
+                  let asset = project.asset(clip.assetID) else { continue }
+            let source = clip.sourceStart.seconds + (time - clip.start.seconds) * clip.speed
+            if let image = await Self.frame(of: store.mediaURL(for: asset), at: source) {
+                frames[trackID] = CIImage(cgImage: image)
+            }
+        }
+        return frames
+    }
+
+    /// A video's stored frame at a source time, as the compositor gets it: not yet turned upright.
+    @concurrent
+    private nonisolated static func frame(of url: URL, at seconds: Double) async -> CGImage? {
+        let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url))
+        generator.appliesPreferredTrackTransform = false
+        generator.maximumSize = CGSize(width: 1280, height: 1280)
+        generator.requestedTimeToleranceBefore = .zero
+        generator.requestedTimeToleranceAfter = .zero
+        return try? await generator.image(at: CMTime(seconds: seconds, preferredTimescale: 600)).image
+    }
+
+    /// The canvas being resized: its picture, faint outside the new canvas, the new canvas's edge, and its size.
+    private func drawCanvasResize(_ resize: CanvasResize) {
+        #if DEBUG
+        debugResizeDraws += 1
+        #endif
+        let rect = { (canvas: CGRect) in
+            CGRect(x: self.canvasRect.minX + canvas.minX * self.viewScale, y: self.canvasRect.minY + canvas.minY * self.viewScale,
+                   width: canvas.width * self.viewScale, height: canvas.height * self.viewScale)
+        }
+        let old = rect(CGRect(origin: .zero, size: canvas))
+        let new = rect(resize.frame)
+        if let ghost = resize.ghost {
+            // It stands in for the player's picture.
+            Theme.previewSurround.setFill()
+            old.fill()
+            let whole = rect(resize.frame.union(CGRect(origin: .zero, size: canvas)))
+            let image = NSImage(cgImage: ghost, size: whole.size)
+            image.draw(in: whole, from: .zero, operation: .sourceOver, fraction: 0.35, respectFlipped: true, hints: nil)
+            NSGraphicsContext.saveGraphicsState()
+            NSBezierPath(rect: new).addClip()
+            image.draw(in: whole, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+            NSGraphicsContext.restoreGraphicsState()
+        } else {
+            // Until the picture is ready, what would be cut off dims.
+            let outside = NSBezierPath(rect: old)
+            outside.append(NSBezierPath(rect: new))
+            outside.windingRule = .evenOdd
+            NSColor.black.withAlphaComponent(0.6).setFill()
+            outside.fill()
+        }
+        let corners = [CGPoint(x: new.minX, y: new.minY), CGPoint(x: new.maxX, y: new.minY),
+                       CGPoint(x: new.maxX, y: new.maxY), CGPoint(x: new.minX, y: new.maxY)]
+        outline(corners, dashed: false)
+
+        // Guides where the edge caught, across the old canvas and the new, over the outline.
+        let span = rect(resize.frame.union(CGRect(origin: .zero, size: canvas)))
+        let guides = NSBezierPath()
+        for x in resize.guides.vertical {
+            let viewX = canvasRect.minX + x * viewScale
+            guides.move(to: CGPoint(x: viewX, y: span.minY))
+            guides.line(to: CGPoint(x: viewX, y: span.maxY))
+        }
+        for y in resize.guides.horizontal {
+            let viewY = canvasRect.minY + y * viewScale
+            guides.move(to: CGPoint(x: span.minX, y: viewY))
+            guides.line(to: CGPoint(x: span.maxX, y: viewY))
+        }
+        guides.lineWidth = 1
+        NSColor.controlAccentColor.setStroke()
+        guides.stroke()
+
+        let even = { (value: CGFloat) in min(max(Int(value.rounded()), 16), 8192) / 2 * 2 }
+        let label = "\(even(resize.frame.width)) × \(even(resize.frame.height))" as NSString
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium),
+            .foregroundColor: NSColor.white,
+        ]
+        let size = label.size(withAttributes: attributes)
+        let pill = CGRect(x: new.midX - size.width / 2 - 7, y: new.maxY - size.height - 14, width: size.width + 14, height: size.height + 6)
+        NSColor.black.withAlphaComponent(0.65).setFill()
+        NSBezierPath(roundedRect: pill, xRadius: pill.height / 2, yRadius: pill.height / 2).fill()
+        label.draw(at: CGPoint(x: pill.minX + 7, y: pill.minY + 3), withAttributes: attributes)
     }
 
     private func target(at point: CGPoint) -> (clip: Clip, drag: Drag)? {
@@ -447,6 +793,10 @@ final class TransformOverlay: NSView {
         let point = convert(event.locationInWindow, from: nil)
         // While typing, the editor applies the text on its own as this click comes in.
         guard titleEditor == nil else { return }
+        if event.modifierFlags.contains(.command), let edges = canvasEdges(at: point) {
+            beginCanvasResize(edges, at: point)
+            return
+        }
         // Double-clicking text types into it on the canvas.
         if event.clickCount == 2, let (clip, _) = target(at: point), clip.title != nil {
             store.beginEditingTitle(clip.id)
@@ -464,6 +814,10 @@ final class TransformOverlay: NSView {
     }
 
     override func mouseDragged(with event: NSEvent) {
+        if canvasResize != nil {
+            dragCanvas(to: convert(event.locationInWindow, from: nil), bothSides: event.modifierFlags.contains(.option))
+            return
+        }
         guard let drag, let id = draft?.id, let clip = state?.project.clip(id) else { return }
         let point = canvasPoint(convert(event.locationInWindow, from: nil))
         // Snapping follows the Snapping setting, like the timeline; holding ⌘ skips it for the moment.
@@ -528,6 +882,13 @@ final class TransformOverlay: NSView {
     }
 
     override func mouseUp(with event: NSEvent) {
+        if let resize = canvasResize {
+            canvasResize = nil
+            if resize.frame != CGRect(origin: .zero, size: canvas) { store.resizeCanvas(to: resize.frame) }
+            updateResizeCursor(at: convert(event.locationInWindow, from: nil), flags: event.modifierFlags)
+            needsDisplay = true
+            return
+        }
         defer {
             drag = nil
             draft = nil
@@ -704,6 +1065,67 @@ extension TransformOverlay {
     /// Clicks the selected picture and drags it so its left edge stops three screen points short of the canvas's
     /// middle line, with ⌘ held or not. Reports where the edge landed, in canvas points from the middle line, and
     /// how many guides showed just before release.
+    /// Drags the selected picture until its left edge is just short of the canvas's left edge, as a person would,
+    /// then calls `whileHeld` before letting go. Reports the guides lit, in canvas points.
+    func debugDragToLeftEdge(whileHeld: () async -> Void) async -> (vertical: [Double], horizontal: [Double])? {
+        guard let id = state?.selection.first, let clip = visibleClips.first(where: { $0.id == id }), let window,
+              let box = corners(of: clip, visual: clip.visual).map(boundingBox) else { return nil }
+        let start = view(center(of: clip.visual))
+        let target = -(box.minX - 3) * viewScale * frameScale
+        let send = { (type: NSEvent.EventType, point: CGPoint) in
+            guard let event = NSEvent.mouseEvent(with: type, location: self.convert(point, to: nil), modifierFlags: [], timestamp: 0,
+                                                 windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)
+            else { return }
+            switch type {
+            case .leftMouseDown: self.mouseDown(with: event)
+            case .leftMouseDragged: self.mouseDragged(with: event)
+            default: self.mouseUp(with: event)
+            }
+        }
+        let end = CGPoint(x: start.x + target, y: start.y)
+        send(.leftMouseDown, start)
+        send(.leftMouseDragged, CGPoint(x: start.x + target / 2, y: start.y))
+        send(.leftMouseDragged, end)
+        let lit = (guides.vertical.map(Double.init), guides.horizontal.map(Double.init))
+        display()
+        await whileHeld()
+        send(.leftMouseUp, end)
+        return lit
+    }
+
+    var debugCanvasRect: CGRect { canvasRect }
+    var debugViewScale: CGFloat { viewScale }
+    var debugResizeGuides: [Double] {
+        canvasResize.map { ($0.guides.vertical + $0.guides.horizontal).map(Double.init) } ?? []
+    }
+
+    /// Holds ⌘ and drags the canvas's right edge by `offset` view points, with ⌥ too when `bothSides`, then calls
+    /// `whileHeld` before letting go.
+    func debugResizeCanvas(by offset: CGFloat, bothSides: Bool, whileHeld: () async -> Void) async {
+        guard let window else { return }
+        let start = CGPoint(x: canvasRect.maxX, y: canvasRect.midY)
+        let flags: NSEvent.ModifierFlags = bothSides ? [.command, .option] : .command
+        let send = { (type: NSEvent.EventType, point: CGPoint) in
+            guard let event = NSEvent.mouseEvent(with: type, location: self.convert(point, to: nil), modifierFlags: flags, timestamp: 0,
+                                                 windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)
+            else { return }
+            switch type {
+            case .leftMouseDown: self.mouseDown(with: event)
+            case .leftMouseDragged: self.mouseDragged(with: event)
+            default: self.mouseUp(with: event)
+            }
+        }
+        send(.leftMouseDown, start)
+        send(.leftMouseDragged, CGPoint(x: start.x + offset / 2, y: start.y))
+        send(.leftMouseDragged, CGPoint(x: start.x + offset, y: start.y))
+        // The video frames for the picture across both canvases are read in the background.
+        try? await Task.sleep(for: .milliseconds(800))
+        send(.leftMouseDragged, CGPoint(x: start.x + offset, y: start.y))
+        display()
+        await whileHeld()
+        send(.leftMouseUp, CGPoint(x: start.x + offset, y: start.y))
+    }
+
     func debugSnapToMiddle(holdingCommand: Bool) async -> (gap: Double, guides: Int)? {
         guard let id = state?.selection.first, let clip = visibleClips.first(where: { $0.id == id }), let window,
               let box = corners(of: clip, visual: clip.visual).map(boundingBox) else { return nil }

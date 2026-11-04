@@ -273,6 +273,100 @@ enum DebugSnapshot {
                 UserDefaults.standard.set(saved, forKey: "loopsPlayback")
             }
 
+            // OVERLAP_SNAPSHOT_GUIDES=<video> brings in that video, selects its clip, and drags it to the canvas's left
+            // edge, reporting the guides lit and capturing `<prefix>-guides.png` while the mouse is still down.
+            var guidesReport: [String: Any] = [:]
+            if let path = environment["OVERLAP_SNAPSHOT_GUIDES"], let store = document?.store {
+                store.importFiles([URL(fileURLWithPath: path)], placement: (.zero, .new(at: store.project.tracks.count)))
+                let started = Date()
+                while store.project.tracks.flatMap(\.clips).isEmpty, Date().timeIntervalSince(started) < 10 {
+                    try? await Task.sleep(for: .milliseconds(100))
+                }
+                if let clip = store.project.tracks.flatMap(\.clips).first {
+                    store.select([clip.id])
+                    store.playback.seek(to: Time(seconds: 1))
+                    try? await Task.sleep(for: .milliseconds(1500))
+                    if let window = NSApplication.shared.windows.first(where: \.isVisible),
+                       let overlay = window.contentView.flatMap({ find(TransformOverlay.self, in: $0) }),
+                       let lit = await overlay.debugDragToLeftEdge(whileHeld: {
+                           if let view = window.contentView?.superview, let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+                               view.cacheDisplay(in: view.bounds, to: bitmap)
+                               try? bitmap.representation(using: .png, properties: [:])?.write(to: URL(filePath: "\(prefix)-guides.png"))
+                           }
+                       }) {
+                        guidesReport = ["vertical": lit.vertical, "horizontal": lit.horizontal,
+                                        "canvas": store.project.canvas.map { [$0.width, $0.height] } ?? []]
+                    }
+                }
+            }
+
+            // OVERLAP_SNAPSHOT_CANVASRESIZE=<points>[,both] ⌘-drags the canvas's right edge that far, ⌘⌥ with ",both",
+            // capturing `<prefix>-resizing.png` before letting go, then reports the canvas and the first clip's placement.
+            var canvasResizeReport: [String: Any] = [:]
+            // "to:<pixels>" drags the edge to that canvas x instead, and reports the guides lit there.
+            if let spec = environment["OVERLAP_SNAPSHOT_CANVASRESIZE"].map({ spec -> String in
+                   guard spec.hasPrefix("to:"), let x = Double(spec.dropFirst(3)),
+                         let overlay = NSApplication.shared.windows.first(where: \.isVisible)?.contentView.flatMap({ find(TransformOverlay.self, in: $0) }),
+                         let canvas = document?.store.project.canvas else { return spec }
+                   return String((x - Double(canvas.width)) * Double(overlay.debugViewScale))
+               }), let offset = spec.split(separator: ",").first.flatMap({ Double($0) }),
+               let store = document?.store, let window = NSApplication.shared.windows.first(where: \.isVisible),
+               let overlay = window.contentView.flatMap({ find(TransformOverlay.self, in: $0) }) {
+                store.playback.seek(to: Time(seconds: 1))
+                try? await Task.sleep(for: .milliseconds(600))
+                let before = store.project.tracks.flatMap(\.clips).first?.visual
+                var lit: [Double] = []
+                await overlay.debugResizeCanvas(by: CGFloat(offset), bothSides: spec.hasSuffix(",both")) {
+                    lit = overlay.debugResizeGuides
+                    if let view = window.contentView?.superview, let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+                        view.cacheDisplay(in: view.bounds, to: bitmap)
+                        try? bitmap.representation(using: .png, properties: [:])?.write(to: URL(filePath: "\(prefix)-resizing.png"))
+                    }
+                }
+                try? await Task.sleep(for: .milliseconds(800))
+                let after = store.project.tracks.flatMap(\.clips).first?.visual
+                canvasResizeReport = ["canvas": store.project.canvas.map { [$0.width, $0.height] } ?? [], "guides": lit,
+                                      "aspect": store.project.canvasAspect.rawValue,
+                                      "before": before.map { [$0.x, $0.y, $0.scale] } ?? [], "after": after.map { [$0.x, $0.y, $0.scale] } ?? []]
+            }
+
+            // OVERLAP_SNAPSHOT_CANVASDRAG=<points> ⌘-drags the canvas's right edge that far with real events posted to
+            // the window over a second, as a person's drag arrives, and reports how often the resize was drawn and how
+            // long each picture took.
+            var canvasDragReport: [String: Any] = [:]
+            if let offset = environment["OVERLAP_SNAPSHOT_CANVASDRAG"].flatMap(Double.init),
+               let window = NSApplication.shared.windows.first(where: \.isVisible),
+               let overlay = window.contentView.flatMap({ find(TransformOverlay.self, in: $0) }), let content = window.contentView {
+                NSApplication.shared.activate(ignoringOtherApps: true)
+                window.makeKeyAndOrderFront(nil)
+                try? await Task.sleep(for: .milliseconds(600))
+                overlay.debugResizeDraws = 0
+                overlay.debugGhostTimes = []
+                let edge = overlay.convert(CGPoint(x: overlay.debugCanvasRect.maxX, y: overlay.debugCanvasRect.midY), to: nil)
+                let send = { (type: NSEvent.EventType, x: CGFloat) in
+                    if let event = NSEvent.mouseEvent(with: type, location: CGPoint(x: x, y: edge.y), modifierFlags: .command,
+                                                      timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                                                      context: nil, eventNumber: 0, clickCount: 1, pressure: type == .leftMouseUp ? 0 : 1) {
+                        NSApplication.shared.postEvent(event, atStart: false)
+                    }
+                }
+                send(.leftMouseDown, edge.x)
+                var drawsDuring: [Int] = []
+                for step in 1...30 {
+                    try? await Task.sleep(for: .milliseconds(33))
+                    send(.leftMouseDragged, edge.x + CGFloat(offset) * CGFloat(step) / 30)
+                    if step % 5 == 0 { drawsDuring.append(overlay.debugResizeDraws) }
+                }
+                try? await Task.sleep(for: .milliseconds(100))
+                send(.leftMouseUp, edge.x + CGFloat(offset))
+                try? await Task.sleep(for: .milliseconds(500))
+                let times = overlay.debugGhostTimes
+                canvasDragReport = ["draws every 5 moves": drawsDuring, "ghosts drawn": times.count,
+                                    "ghost ms median": times.sorted().dropFirst(times.count / 2).first ?? -1, "ghost ms max": times.max() ?? -1,
+                                    "canvas": document?.store.project.canvas.map { [$0.width, $0.height] } ?? []]
+                _ = content
+            }
+
             // OVERLAP_SNAPSHOT_TEXTEDIT=commit or cancel double-clicks the first text showing, types into it on the
             // canvas, captures the window midway as `<prefix>-editing.png`, then applies or cancels.
             var textEditReport: [String: Any] = [:]
@@ -908,6 +1002,9 @@ enum DebugSnapshot {
                     "pixels": pixelsReport,
                     "loops": loopsReport,
                     "loopPlay": loopPlayReport,
+                    "guides": guidesReport,
+                    "canvasResize": canvasResizeReport,
+                    "canvasDrag": canvasDragReport,
                     "edited": editedSamples,
                     "titleSeek": titleSeekReport,
                     "addColor": addColorReport,

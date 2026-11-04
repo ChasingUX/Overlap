@@ -530,6 +530,43 @@ extension Project {
         tracks[location.track].clips.sort { $0.start < $1.start }
     }
 
+    /// Makes the canvas `frame`, given in the current canvas's pixels, without moving or resizing anything on it:
+    /// pictures keep their place and size, and the canvas shows more around them or cuts some off. Background
+    /// clips fill whatever the canvas is. The shape becomes Custom.
+    mutating func resizeCanvas(to frame: CGRect) {
+        let old = canvas ?? Project.defaultCanvas
+        let even = { (value: CGFloat) in min(max(Int(value.rounded()), 16), 8192) / 2 * 2 }
+        let size = CGSize(width: even(frame.width), height: even(frame.height))
+        let from = CGSize(width: old.width, height: old.height)
+        let to = CGRect(origin: frame.origin, size: size)
+        for track in tracks.indices where !tracks[track].isLocked {
+            for index in tracks[track].clips.indices where tracks[track].clips[index].fill == nil {
+                let clip = tracks[track].clips[index]
+                tracks[track].clips[index].visual = visual(of: clip, keptFrom: from, onto: to)
+            }
+        }
+        canvas = Canvas(width: Int(size.width), height: Int(size.height), frameRate: old.frameRate)
+        canvasAspect = .custom
+    }
+
+    /// A clip's placement on a canvas `to`, given in the pixels of the canvas `from`, that keeps the picture where
+    /// it was and the size it was. Placement is a share of the canvas, and size grows with it: media fits the
+    /// canvas at a scale of 1, and text is drawn in proportion to the canvas's height.
+    func visual(of clip: Clip, keptFrom from: CGSize, onto to: CGRect) -> Visual {
+        var visual = clip.visual
+        let center = CGPoint(x: from.width / 2 + visual.x * from.width - to.minX, y: from.height / 2 + visual.y * from.height - to.minY)
+        visual.x = (center.x - to.width / 2) / to.width
+        visual.y = (center.y - to.height / 2) / to.height
+        if clip.title != nil {
+            visual.scale *= from.height / to.height
+        } else if let asset = asset(clip.assetID), let width = asset.pixelWidth, let height = asset.pixelHeight, width > 0, height > 0 {
+            let fit = { (canvas: CGSize) in min(canvas.width / CGFloat(width), canvas.height / CGFloat(height)) }
+            visual.scale *= fit(from) / fit(to.size)
+        }
+        visual.scale = visual.scale.clamped(to: Visual.scaleRange)
+        return visual
+    }
+
     /// Makes a clip play one loop of its source, from `sourceStart` up to `sourceEnd`. Like any trim, the picture
     /// stays where it is on the timeline, unless the clip would then run into another clip or before zero: then it
     /// keeps its start, and any clips it would run into move along.

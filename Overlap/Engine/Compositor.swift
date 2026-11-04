@@ -350,6 +350,14 @@ final class Compositor: NSObject, AVVideoCompositing, @unchecked Sendable {
 
     func cancelAllPendingVideoCompositionRequests() {}
 
+    /// A frame of a plan at `time`, drawn `scale` times its canvas size, with `frames` standing in for the video
+    /// tracks' frames. For drawing the picture where the player doesn't, as while the canvas is resized.
+    static func still(of plan: RenderPlan, at time: Double, frames: [CMPersistentTrackID: CIImage], scale: CGFloat) -> CGImage? {
+        let image = renderer.image(plan: plan, at: time) { frames[$0] }
+            .transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        return context.createCGImage(image, from: image.extent.integral, format: .RGBA8, colorSpace: outputColorSpace)
+    }
+
     /// The preview's still while nothing on the timeline has a picture: the background on its own, as it exports,
     /// or without one, a dark placeholder marking the canvas.
     static func stage(for plan: RenderPlan) -> CGImage? {
