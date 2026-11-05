@@ -23,11 +23,10 @@ enum DebugSnapshot {
                 try? await Task.sleep(for: .seconds(3))
             }
             // OVERLAP_SNAPSHOT_DEMO=pip builds the milestone 4 picture: the first video shrunk with rounded corners and
-            // a shadow over a gradient, inside a padded frame, with a title over it. The playhead moves to 2 s.
+            // a shadow over a gradient, with a title over it. The playhead moves to 2 s.
             if environment["OVERLAP_SNAPSHOT_DEMO"] == "pip", let store = document?.store {
                 store.apply("Demo") { project in
                     project.background = BackgroundFill.gradients[0]
-                    project.frame = PictureFrame(padding: 0.06, shadow: 60, corners: 0.03)
                     for (trackIndex, track) in project.tracks.enumerated() {
                         for (clipIndex, clip) in track.clips.enumerated() where project.asset(clip.assetID)?.kind == .video {
                             project.tracks[trackIndex].clips[clipIndex].visual = Visual(x: 0.18, y: -0.04, scale: 0.55, corners: 0.05, shadow: 70)

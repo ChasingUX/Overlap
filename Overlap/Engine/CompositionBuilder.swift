@@ -247,7 +247,6 @@ enum CompositionBuilder {
             let box = RenderPlanBox(RenderPlan(
                 canvas: renderSize,
                 background: project.background.flatMap { resolve($0, urls: urls) },
-                frame: project.frame,
                 layers: layers,
                 hiddenClip: nil
             ))

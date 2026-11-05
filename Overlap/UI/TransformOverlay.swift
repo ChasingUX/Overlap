@@ -100,28 +100,18 @@ final class TransformOverlay: NSView {
         return CGSize(width: canvas.width, height: canvas.height)
     }
 
-    /// The whole-picture frame shrinks everything by its padding when there's a background to show around it.
-    private var frameScale: CGFloat {
-        guard let project = state?.project, project.background != nil else { return 1 }
-        return 1 - 2 * project.frame.padding
-    }
-
     /// View points per canvas point.
     private var viewScale: CGFloat {
         canvasRect.width / canvas.width
     }
 
-    /// Canvas points to view points, through the frame's inset.
+    /// Canvas points to view points.
     private func view(_ point: CGPoint) -> CGPoint {
-        let center = CGPoint(x: canvas.width / 2, y: canvas.height / 2)
-        return CGPoint(x: canvasRect.minX + (center.x + (point.x - center.x) * frameScale) * viewScale,
-                       y: canvasRect.minY + (center.y + (point.y - center.y) * frameScale) * viewScale)
+        CGPoint(x: canvasRect.minX + point.x * viewScale, y: canvasRect.minY + point.y * viewScale)
     }
 
     private func canvasPoint(_ point: CGPoint) -> CGPoint {
-        let center = CGPoint(x: canvas.width / 2, y: canvas.height / 2)
-        return CGPoint(x: center.x + ((point.x - canvasRect.minX) / viewScale - center.x) / frameScale,
-                       y: center.y + ((point.y - canvasRect.minY) / viewScale - center.y) / frameScale)
+        CGPoint(x: (point.x - canvasRect.minX) / viewScale, y: (point.y - canvasRect.minY) / viewScale)
     }
 
     /// The whole picture's size before its own scale: the source fitted to the canvas, or the drawn text.
@@ -189,7 +179,7 @@ final class TransformOverlay: NSView {
 
     /// How near, in canvas points, a picture has to come to a line to snap to it: six points on screen.
     private var snapDistance: CGFloat {
-        6 / max(0.001, viewScale * frameScale)
+        6 / max(0.001, viewScale)
     }
 
     /// The lines pictures snap to: the canvas's edges and middle, and the edges and middles of the other pictures
@@ -243,7 +233,7 @@ final class TransformOverlay: NSView {
             return
         }
         // Within half a point on screen counts as on the line.
-        let reach = 0.5 / max(0.001, viewScale * frameScale)
+        let reach = 0.5 / max(0.001, viewScale)
         func met(_ low: CGFloat, _ middle: CGFloat, _ high: CGFloat, _ lines: [CGFloat]) -> [CGFloat] {
             let meets = { (edge: CGFloat) in lines.filter { abs($0 - edge) <= reach } }
             // With both edges on lines, the middle line says nothing more.
@@ -300,7 +290,7 @@ final class TransformOverlay: NSView {
             return
         }
         // View points per canvas pixel at the text's own scale, matching how the title is drawn.
-        let scale = viewScale * frameScale * clip.visual.scale
+        let scale = viewScale * clip.visual.scale
         let size = CGFloat(title.size) * canvas.height / 1080 * scale
         let inset = title.backdrop == nil ? CGSize(width: 2 * scale, height: 2 * scale) : CGSize(width: size * 0.45, height: size * 0.3)
         let isNew = titleEditor == nil
@@ -607,16 +597,14 @@ final class TransformOverlay: NSView {
         drawGhost()
     }
 
-    /// The left and right, and top and bottom, edges of the pictures showing now, in canvas pixels as they're drawn,
-    /// through the frame's inset.
+    /// The left and right, and top and bottom, edges of the pictures showing now, in canvas pixels.
     private func pictureEdges() -> (vertical: [CGFloat], horizontal: [CGFloat]) {
         var vertical: [CGFloat] = []
         var horizontal: [CGFloat] = []
         for clip in visibleClips {
             guard let box = corners(of: clip, visual: clip.visual).map(boundingBox) else { continue }
-            let shown = { (value: CGFloat, middle: CGFloat) in middle + (value - middle) * self.frameScale }
-            vertical += [shown(box.minX, canvas.width / 2), shown(box.maxX, canvas.width / 2)]
-            horizontal += [shown(box.minY, canvas.height / 2), shown(box.maxY, canvas.height / 2)]
+            vertical += [box.minX, box.maxX]
+            horizontal += [box.minY, box.maxY]
         }
         return (vertical, horizontal)
     }
@@ -628,7 +616,7 @@ final class TransformOverlay: NSView {
         let union = resize.frame.union(CGRect(origin: .zero, size: canvas))
         // With nothing to play there's no plan yet: just the background, or the bare canvas, as the stage shows it.
         guard let plan = store.playback.plan?.current else {
-            let stage = RenderPlan(canvas: union.size, background: project.background.flatMap(store.resolve), frame: project.frame,
+            let stage = RenderPlan(canvas: union.size, background: project.background.flatMap(store.resolve),
                                    layers: [], hiddenClip: nil)
             resize.ghost = Compositor.stage(for: stage)
             canvasResize = resize
@@ -1071,7 +1059,7 @@ extension TransformOverlay {
         guard let id = state?.selection.first, let clip = visibleClips.first(where: { $0.id == id }), let window,
               let box = corners(of: clip, visual: clip.visual).map(boundingBox) else { return nil }
         let start = view(center(of: clip.visual))
-        let target = -(box.minX - 3) * viewScale * frameScale
+        let target = -(box.minX - 3) * viewScale
         let send = { (type: NSEvent.EventType, point: CGPoint) in
             guard let event = NSEvent.mouseEvent(with: type, location: self.convert(point, to: nil), modifierFlags: [], timestamp: 0,
                                                  windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)
@@ -1130,7 +1118,7 @@ extension TransformOverlay {
         guard let id = state?.selection.first, let clip = visibleClips.first(where: { $0.id == id }), let window,
               let box = corners(of: clip, visual: clip.visual).map(boundingBox) else { return nil }
         let start = view(center(of: clip.visual))
-        let target = (canvas.width / 2 - box.minX) * viewScale * frameScale - 3
+        let target = (canvas.width / 2 - box.minX) * viewScale - 3
         let send = { (type: NSEvent.EventType, point: CGPoint) in
             guard let event = NSEvent.mouseEvent(with: type, location: self.convert(point, to: nil),
                                                  modifierFlags: holdingCommand ? .command : [], timestamp: 0,

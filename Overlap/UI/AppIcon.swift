@@ -1,8 +1,9 @@
 import SwiftUI
 
 /// Every icon the app draws, in one place.
-/// SF Symbols stand in for Phosphor's filled icons until the PhosphorSwift package
+/// SF Symbols stand in for Phosphor's icons until the PhosphorSwift package
 /// (github.com/phosphor-icons/swift) is added; swapping happens here only.
+/// The rail's tabs are outlines; the playback buttons stay filled.
 enum AppIcon {
     case media
     case canvas
@@ -23,12 +24,12 @@ enum AppIcon {
 
     var symbolName: String {
         switch self {
-        case .media: "film.stack.fill"
-        case .canvas: "aspectratio.fill"
-        case .video: "video.fill"
-        case .audio: "speaker.wave.2.fill"
-        case .text: "t.square.fill"
-        case .transitions: "arrow.left.arrow.right.square.fill"
+        case .media: "photo.on.rectangle.angled"
+        case .canvas: "aspectratio"
+        case .video: "video"
+        case .audio: "waveform"
+        case .text: "textformat"
+        case .transitions: "square.on.square.dashed"
         case .importMedia: "plus"
         case .play: "play.fill"
         case .pause: "pause.fill"

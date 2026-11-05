@@ -3,8 +3,8 @@ import CoreImage
 import ImageIO
 import Synchronization
 
-/// Draws a frame from a render plan with Core Image: the background, every picture layer from the bottom track
-/// up, then the whole-picture frame. Used by the compositor during playback and export, and directly by tests.
+/// Draws a frame from a render plan with Core Image: the background, then every picture layer from the bottom track
+/// up. Used by the compositor during playback and export, and directly by tests.
 final class FrameRenderer: @unchecked Sendable {
     private struct TitleKey: Hashable {
         var title: Title
@@ -46,12 +46,8 @@ final class FrameRenderer: @unchecked Sendable {
             }
         }
 
-        // The whole-picture frame needs a background to show around it.
-        guard let background else {
-            return picture.composited(over: CIImage(color: .black)).cropped(to: canvas)
-        }
-        let framed = plan.frame.isOff ? picture : frame(picture, with: plan.frame, in: canvas)
-        return framed.composited(over: background).cropped(to: canvas)
+        // Without a background, the canvas is black where nothing covers it.
+        return picture.composited(over: background ?? CIImage(color: .black)).cropped(to: canvas)
     }
 
     // MARK: Layers
@@ -154,26 +150,6 @@ final class FrameRenderer: @unchecked Sendable {
         }
     }
 
-    // MARK: The whole-picture frame
-
-    /// Insets the composed picture by the padding, rounds it, and lifts it with a shadow.
-    private func frame(_ picture: CIImage, with frame: PictureFrame, in canvas: CGRect) -> CIImage {
-        let scale = 1 - 2 * frame.padding
-        var image = picture.transformed(by: CGAffineTransform(translationX: -canvas.midX, y: -canvas.midY)
-            .concatenating(CGAffineTransform(scaleX: scale, y: scale))
-            .concatenating(CGAffineTransform(translationX: canvas.midX, y: canvas.midY)))
-        let inset = canvas.insetBy(dx: canvas.width * frame.padding, dy: canvas.height * frame.padding)
-        if frame.corners > 0 {
-            image = masked(image, to: inset, radius: frame.corners * min(inset.width, inset.height))
-        } else {
-            image = image.cropped(to: inset)
-        }
-        if frame.shadow > 0 {
-            image = shadowed(image, amount: frame.shadow, canvasHeight: canvas.height)
-        }
-        return image
-    }
-
     // MARK: Effects
 
     private func atOrigin(_ image: CIImage) -> CIImage {
@@ -222,16 +198,23 @@ final class FrameRenderer: @unchecked Sendable {
         ])
     }
 
-    /// A soft shadow below the picture's shape. 100 is a large, dark shadow.
+    /// A shadow below the picture's shape: a wide, soft one that lifts it off what's behind, and a tight one along its
+    /// edge, dark enough to show on a dark background. 100 is a large, dark shadow.
     private func shadowed(_ image: CIImage, amount: Double, canvasHeight: Double) -> CIImage {
         let strength = min(max(amount, 0), 100) / 100
-        let radius = 2 + strength * 0.035 * canvasHeight
-        let shape = CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: 0.7 * strength))
+        let shape = CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: 1))
             .cropped(to: image.extent)
             .applyingFilter("CISourceInCompositing", parameters: [kCIInputBackgroundImageKey: image])
-        let shadow = shape.applyingGaussianBlur(sigma: radius / 2)
-            .transformed(by: CGAffineTransform(translationX: 0, y: -radius * 0.35))
-        return image.composited(over: shadow)
+        func shadow(opacity: Double, blur: Double, drop: Double) -> CIImage {
+            faded(shape, to: opacity)
+                .applyingGaussianBlur(sigma: blur * canvasHeight)
+                .transformed(by: CGAffineTransform(translationX: 0, y: -drop * canvasHeight))
+        }
+        // It darkens faster than it grows, so the middle of the slider already shows on a dark background.
+        let darkness = strength.squareRoot()
+        let wide = shadow(opacity: darkness, blur: 0.006 + 0.04 * strength, drop: 0.028 * strength)
+        let edge = shadow(opacity: 0.7 * darkness, blur: 0.003 + 0.004 * strength, drop: 0.004 * strength)
+        return image.composited(over: edge.composited(over: wide))
     }
 
     // MARK: Fills, images and titles

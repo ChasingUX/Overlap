@@ -206,17 +206,22 @@ struct PictureTests {
         #expect(try pixel(rendered, x: 0.05, y: 0.1).isClose(to: .black))
     }
 
-    @Test func paddingShowsTheBackgroundAroundThePicture() async throws {
+    @Test func shadowShowsOnADarkBackground() async throws {
         let url = try makeImage(Self.red, width: 320, height: 180)
         let image = asset(url, kind: .image)
         var project = Project()
         project.assets = [image]
-        project.background = .color(Self.blue)
-        project.frame.padding = 0.1
-        project.tracks[0].clips = [clip(image)]
+        let dark = RGBA(red: 0.11, green: 0.11, blue: 0.118)
+        project.background = .color(dark)
+        var still = clip(image)
+        still.visual = Visual(scale: 0.6, shadow: 100)
+        project.tracks[0].clips = [still]
         let rendered = try await frame(of: project, urls: [image.id: url], at: 1)
+        // The picture ends at 0.8 down. Just below it the background is clearly darker; further down it's untouched.
+        let below = try pixel(rendered, x: 0.5, y: 0.83)
+        #expect(below.red < dark.red * 0.7)
+        #expect(try pixel(rendered, x: 0.5, y: 0.97).isClose(to: dark, within: 0.02))
         #expect(try pixel(rendered, x: 0.5, y: 0.5).isClose(to: Self.red))
-        #expect(try pixel(rendered, x: 0.04, y: 0.04).isClose(to: Self.blue))
     }
 
     @Test func cropMasksWithoutMovingOrResizing() async throws {
@@ -266,8 +271,9 @@ struct PictureTests {
         var project = Project()
         project.assets = [main, inset]
         project.background = .gradient(GradientFill(from: .black, to: .white, angle: 90))
-        project.frame = PictureFrame(padding: 0.1, shadow: 40, corners: 0.05)
-        project.tracks[0].clips = [clip(main)]
+        var framed = clip(main)
+        framed.visual = Visual(scale: 0.8, corners: 0.05, shadow: 40)
+        project.tracks[0].clips = [framed]
         var small = clip(inset)
         small.visual = Visual(x: 0.3, y: -0.3, scale: 0.25, corners: 0.1, shadow: 50)
         project.tracks[1].clips = [small]
@@ -276,14 +282,14 @@ struct PictureTests {
         project.addTitle(title, visual: Visual(y: 0.3), at: .zero, target: .new(at: project.tracks.count))
         let rendered = try await frame(of: project, urls: [main.id: mainURL, inset.id: insetURL], at: 1)
 
-        // The gradient shows in the padding, dark at the top and light at the bottom.
+        // The gradient shows around the main video, dark at the top and light at the bottom.
         let top = try pixel(rendered, x: 0.5, y: 0.02)
         let bottom = try pixel(rendered, x: 0.5, y: 0.98)
         #expect(top.red < 0.25 && bottom.red > 0.75)
-        // The main video fills the framed picture, the inset sits top right, and the title sits low in the middle.
+        // The main video fills the middle, the inset sits top right, and the title sits low in the middle.
         #expect(try pixel(rendered, x: 0.3, y: 0.5).isClose(to: Self.red, within: 0.2))
         #expect(try pixel(rendered, x: 0.74, y: 0.26).isClose(to: Self.green, within: 0.2))
-        #expect(try pixel(rendered, x: 0.5, y: 0.74).isClose(to: .white, within: 0.15))
+        #expect(try pixel(rendered, x: 0.5, y: 0.8).isClose(to: .white, within: 0.15))
     }
 
     @Test func darkTonesComeThroughUnchanged() async throws {
@@ -355,12 +361,10 @@ struct PictureTests {
         let plan = try #require(built.plan)
         var changed = project
         changed.background = .color(Self.green)
-        changed.frame.padding = 0.2
         let fillClip = try #require(changed.tracks[0].clips.first)
         changed.changeVisual(of: [fillClip.id]) { $0.opacity = 0.5 }
         plan.update { $0.takeLook(from: changed) { fill in if case let .color(color) = fill { .color(color) } else { nil } } }
         #expect(plan.current.background == .color(Self.green))
-        #expect(plan.current.frame.padding == 0.2)
         #expect(plan.current.layers.first?.visual.opacity == 0.5)
     }
 

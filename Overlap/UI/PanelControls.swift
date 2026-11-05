@@ -9,6 +9,15 @@ enum PanelMetrics {
     /// Chosen options sit this far in from the box's edges, with concentric corners.
     static let pillInset: CGFloat = 5
     static let pillRadius: CGFloat = boxRadius - pillInset
+    /// A row in a `PanelCard`, a little shorter than a box of its own.
+    static let cardRowHeight: CGFloat = 36
+    /// How far a plain value's hover fill reaches past its text.
+    static let valueInset: CGFloat = 6
+}
+
+extension EnvironmentValues {
+    /// Set inside a `PanelCard`, where rows share one box and their values sit plain on it.
+    @Entry var isInPanelCard = false
 }
 
 /// A heading, then the group's controls.
@@ -27,6 +36,47 @@ struct PanelGroup<Content: View>: View {
     }
 }
 
+/// Rows that share one box, with a hairline between each, and their values plain on the box rather than on pills.
+struct PanelCard<Content: View>: View {
+    @ViewBuilder var content: Content
+
+    @Environment(\.displayScale) private var displayScale
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Group(subviews: content) { rows in
+                ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
+                    if index > 0 {
+                        Rectangle()
+                            .fill(Color(nsColor: Theme.separator))
+                            .frame(height: 1 / displayScale)
+                            .padding(.horizontal, PanelMetrics.insidePadding)
+                    }
+                    row
+                }
+            }
+        }
+        .background(ControlBox())
+        .environment(\.isInPanelCard, true)
+    }
+}
+
+/// What a value sits on: the chosen pill in a box of its own; in a card, nothing until the pointer is over it.
+struct ValueBackground: View {
+    let isPlain: Bool
+    var isHighlighted = false
+
+    var body: some View {
+        if isPlain {
+            RoundedRectangle(cornerRadius: PanelMetrics.pillRadius, style: .continuous)
+                .fill(Color(nsColor: Theme.controlFill))
+                .opacity(isHighlighted ? 1 : 0)
+        } else {
+            ChosenPill()
+        }
+    }
+}
+
 /// The rounded box every control sits in.
 struct ControlBox: View {
     var body: some View {
@@ -40,6 +90,8 @@ struct ControlRow<Trailing: View>: View {
     let title: String
     @ViewBuilder var trailing: Trailing
 
+    @Environment(\.isInPanelCard) private var isInCard
+
     var body: some View {
         HStack(spacing: 8) {
             Text(title)
@@ -50,9 +102,11 @@ struct ControlRow<Trailing: View>: View {
         }
         .font(.system(size: 13))
         .padding(.leading, PanelMetrics.insidePadding)
-        .padding(.trailing, PanelMetrics.pillInset + 2)
-        .frame(height: PanelMetrics.boxHeight)
-        .background(ControlBox())
+        .padding(.trailing, isInCard ? PanelMetrics.insidePadding - PanelMetrics.valueInset : PanelMetrics.pillInset + 2)
+        .frame(height: isInCard ? PanelMetrics.cardRowHeight : PanelMetrics.boxHeight)
+        .background {
+            if !isInCard { ControlBox() }
+        }
     }
 }
 
@@ -61,11 +115,13 @@ struct ValueRow: View {
     let title: String
     let value: String
 
+    @Environment(\.isInPanelCard) private var isInCard
+
     var body: some View {
         ControlRow(title: title) {
             Text(value)
                 .monospacedDigit()
-                .padding(.trailing, PanelMetrics.insidePadding - PanelMetrics.pillInset - 2)
+                .padding(.trailing, isInCard ? PanelMetrics.valueInset : PanelMetrics.insidePadding - PanelMetrics.pillInset - 2)
         }
     }
 }
@@ -145,6 +201,9 @@ struct MenuRow<Items: View>: View {
     let value: String
     @ViewBuilder var items: Items
 
+    @Environment(\.isInPanelCard) private var isInCard
+    @State private var isHovered = false
+
     var body: some View {
         ControlRow(title: title) {
             Menu {
@@ -157,15 +216,16 @@ struct MenuRow<Items: View>: View {
                         .font(.system(size: 9, weight: .semibold))
                         .foregroundStyle(.secondary)
                 }
-                .padding(.horizontal, 10)
-                .frame(height: PanelMetrics.boxHeight - PanelMetrics.pillInset * 2)
-                .background(ChosenPill())
+                .padding(.horizontal, isInCard ? PanelMetrics.valueInset : 10)
+                .frame(height: valueHeight(inCard: isInCard))
+                .background(ValueBackground(isPlain: isInCard, isHighlighted: isHovered))
                 .contentShape(Rectangle())
             }
             .menuStyle(.button)
             .buttonStyle(.plain)
             .menuIndicator(.hidden)
             .fixedSize()
+            .onHover { isHovered = $0 }
         }
     }
 }
@@ -193,6 +253,8 @@ struct PopUpRow: View {
     let items: () -> [Item]
 
     @State private var anchor = PopUpAnchor()
+    @Environment(\.isInPanelCard) private var isInCard
+    @State private var isHovered = false
 
     var body: some View {
         ControlRow(title: title) {
@@ -211,14 +273,15 @@ struct PopUpRow: View {
                         .font(.system(size: 9, weight: .semibold))
                         .foregroundStyle(.secondary)
                 }
-                .padding(.horizontal, 10)
-                .frame(height: PanelMetrics.boxHeight - PanelMetrics.pillInset * 2)
-                .background(ChosenPill())
+                .padding(.horizontal, isInCard ? PanelMetrics.valueInset : 10)
+                .frame(height: valueHeight(inCard: isInCard))
+                .background(ValueBackground(isPlain: isInCard, isHighlighted: isHovered))
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .background(PopUpAnchorView(anchor: anchor))
             .fixedSize()
+            .onHover { isHovered = $0 }
             .accessibilityLabel(title)
             .accessibilityValue(value)
         }
@@ -335,6 +398,8 @@ struct AddColorSwatch: NSViewRepresentable {
     /// Where the panel starts.
     let color: RGBA
     let onChange: (RGBA) -> Void
+    /// Whether the color panel is picking for this swatch, so it can show the chosen ring meanwhile.
+    var onActiveChange: (Bool) -> Void = { _ in }
     /// The color kept, and the one kept earlier while picking this time, which it replaces.
     let onCommit: (RGBA, _ earlier: RGBA?) -> Void
 
@@ -350,6 +415,7 @@ struct AddColorSwatch: NSViewRepresentable {
     func updateNSView(_ well: AddColorWell, context: Context) {
         well.onChange = onChange
         well.onCommit = onCommit
+        well.onActiveChange = onActiveChange
         if !well.isActive {
             well.color = NSColor(srgbRed: color.red, green: color.green, blue: color.blue, alpha: 1)
         }
@@ -361,36 +427,28 @@ struct AddColorSwatch: NSViewRepresentable {
 struct EyedropperSwatch: View {
     let onPick: (RGBA) -> Void
 
-    var body: some View {
-        Button {
-            NSColorSampler().show { picked in
-                guard let srgb = picked?.usingColorSpace(.sRGB) else { return }
-                let color = RGBA(red: srgb.redComponent, green: srgb.greenComponent, blue: srgb.blueComponent)
-                MainActor.assumeIsolated { onPick(color) }
-            }
-        } label: {
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(Color.primary.opacity(0.06))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .strokeBorder(Color.primary.opacity(0.12))
-                }
-                .overlay {
-                    Image(systemName: "eyedropper")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(.secondary)
-                }
-                .contentShape(Rectangle())
+    private func pick() {
+        NSColorSampler().show { picked in
+            guard let srgb = picked?.usingColorSpace(.sRGB) else { return }
+            let color = RGBA(red: srgb.redComponent, green: srgb.greenComponent, blue: srgb.blueComponent)
+            MainActor.assumeIsolated { onPick(color) }
         }
-        .buttonStyle(.plain)
+    }
+
+    var body: some View {
+        Swatch(isRound: true, isSelected: false, name: "Pick a color from the screen", isTool: true, action: pick) {
+            Image(systemName: "eyedropper")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.secondary)
+        }
         .help("Pick a color from the screen")
-        .accessibilityLabel("Pick a color from the screen")
     }
 }
 
 final class AddColorWell: NSColorWell {
     var onChange: ((RGBA) -> Void)?
     var onCommit: ((RGBA, RGBA?) -> Void)?
+    var onActiveChange: ((Bool) -> Void)?
     private var settle: Task<Void, Never>?
     /// The color kept since the panel was last opened from here.
     private var kept: RGBA?
@@ -413,6 +471,7 @@ final class AddColorWell: NSColorWell {
         panel.showsAlpha = false
         place(panel)
         super.activate(exclusive)
+        onActiveChange?(true)
     }
 
     /// Opens the color panel beside the swatch, just past the edge of the panel it sits in and level with it, so
@@ -430,7 +489,7 @@ final class AddColorWell: NSColorWell {
 
     override func deactivate() {
         super.deactivate()
-        needsDisplay = true
+        onActiveChange?(false)
     }
 
     @objc private func colorDidChange() {
@@ -446,15 +505,15 @@ final class AddColorWell: NSColorWell {
         }
     }
 
-    /// Drawn as a swatch rather than a well: an empty tile with a +, outlined like a chosen swatch while the panel
-    /// is picking for it.
+    /// Drawn as a swatch rather than a well: a dark circle with a +, like the eyedropper beside it. The ring marking
+    /// it while the panel picks for it is drawn around it by the picker.
     override func draw(_ dirtyRect: NSRect) {
-        let tile = NSBezierPath(roundedRect: bounds.insetBy(dx: isActive ? 1 : 0.5, dy: isActive ? 1 : 0.5), xRadius: 6, yRadius: 6)
-        NSColor.white.withAlphaComponent(0.06).setFill()
-        tile.fill()
-        (isActive ? NSColor.white : NSColor.white.withAlphaComponent(0.12)).setStroke()
-        tile.lineWidth = isActive ? 2 : 1
-        tile.stroke()
+        let circle = NSBezierPath(ovalIn: bounds.insetBy(dx: 0.5, dy: 0.5))
+        NSColor.black.withAlphaComponent(SwatchMetrics.toolShade).setFill()
+        circle.fill()
+        NSColor.white.withAlphaComponent(0.14).setStroke()
+        circle.lineWidth = 1
+        circle.stroke()
         let symbol = NSImage(systemSymbolName: "plus", accessibilityDescription: nil)?
             .withSymbolConfiguration(.init(pointSize: 11, weight: .medium)
                 .applying(.init(paletteColors: [.secondaryLabelColor])))
@@ -498,6 +557,11 @@ struct OptionButtonStyle: ButtonStyle {
             .contentShape(RoundedRectangle(cornerRadius: PanelMetrics.pillRadius))
             .opacity(configuration.isPressed ? 0.7 : 1)
     }
+}
+
+/// How tall a value's pill or hover fill is: inset from its row's edges, with concentric corners.
+func valueHeight(inCard: Bool) -> CGFloat {
+    (inCard ? PanelMetrics.cardRowHeight : PanelMetrics.boxHeight) - PanelMetrics.pillInset * 2
 }
 
 /// The raised pill behind a chosen option.

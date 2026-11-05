@@ -209,8 +209,9 @@ struct ExportTests {
         project.assets += [main, inset]
         project.canvas = Canvas(width: 640, height: 360, frameRate: 30)
         project.background = .gradient(GradientFill(from: .black, to: .white, angle: 90))
-        project.frame = PictureFrame(padding: 0.1, shadow: 40, corners: 0.05)
-        project.tracks[1].clips = [pictures.clip(main, length: 4)]
+        var framed = pictures.clip(main, length: 4)
+        framed.visual = Visual(scale: 0.8, corners: 0.05, shadow: 40)
+        project.tracks[1].clips = [framed]
         var small = pictures.clip(inset, length: 4)
         small.visual = Visual(x: 0.3, y: -0.3, scale: 0.25, corners: 0.1, shadow: 50)
         project.tracks[2].clips = [small]
@@ -239,7 +240,7 @@ struct ExportTests {
         #expect(try pictures.pixel(frame, x: 0.5, y: 0.98).red > 0.75)
         #expect(try pictures.pixel(frame, x: 0.3, y: 0.5).isClose(to: PictureTests.red, within: 0.2))
         #expect(try pictures.pixel(frame, x: 0.74, y: 0.26).isClose(to: PictureTests.green, within: 0.2))
-        #expect(try pictures.pixel(frame, x: 0.5, y: 0.74).isClose(to: .white, within: 0.15))
+        #expect(try pictures.pixel(frame, x: 0.5, y: 0.8).isClose(to: .white, within: 0.15))
     }
 
     @Test func scalesDownInHEVC() async throws {

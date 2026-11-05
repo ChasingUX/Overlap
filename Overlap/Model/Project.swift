@@ -123,7 +123,6 @@ struct Project: Equatable, Sendable, Codable {
     var canvasAspect = CanvasAspect.auto
     /// What shows behind the picture; nil is none, and the canvas is black where nothing covers it.
     var background: BackgroundFill?
-    var frame = PictureFrame()
     /// Whether exports are brought to `loudnessTarget`. Off leaves the mix as it plays.
     var normalizesLoudness = true
 
@@ -222,7 +221,6 @@ extension Project {
         defaultCrossfadeCurve = try container.decodeIfPresent(Curve.self, forKey: .defaultCrossfadeCurve) ?? .equalPower
         canvasAspect = try container.decodeIfPresent(CanvasAspect.self, forKey: .canvasAspect) ?? .auto
         background = try container.decodeIfPresent(BackgroundFill.self, forKey: .background)
-        frame = try container.decodeIfPresent(PictureFrame.self, forKey: .frame) ?? PictureFrame()
         normalizesLoudness = try container.decodeIfPresent(Bool.self, forKey: .normalizesLoudness) ?? true
     }
 }

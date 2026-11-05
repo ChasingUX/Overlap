@@ -282,7 +282,6 @@ final class ProjectStore {
         stageImage = Compositor.stage(for: RenderPlan(
             canvas: CGSize(width: canvas.width, height: canvas.height),
             background: project.background.flatMap(resolve),
-            frame: project.frame,
             layers: [],
             hiddenClip: nil
         ))
@@ -1016,13 +1015,9 @@ final class ProjectStore {
         apply("Change Background") { $0.background = fill }
     }
 
-    func setFrame(_ name: String, _ change: (inout PictureFrame) -> Void) {
-        apply(name) { change(&$0.frame) }
-    }
-
     /// Picks image files to use as wallpapers: each is kept in the wallpaper library for every project, and the
-    /// last one becomes this project's background.
-    func presentWallpaperPanel() {
+    /// last one is used, as this project's background unless `use` says otherwise.
+    func presentWallpaperPanel(use: ((BackgroundFill) -> Void)? = nil) {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.image]
         panel.allowsMultipleSelection = true
@@ -1032,18 +1027,20 @@ final class ProjectStore {
             WallpaperLibrary.add(url)
         }
         if let last = panel.urls.last {
-            useWallpaper(last)
+            useWallpaper(last, use: use)
         }
     }
 
-    /// Makes a wallpaper this project's background, copying it into the project unless it's already there.
-    func useWallpaper(_ url: URL) {
+    /// Uses a library wallpaper, copying it into the project unless it's already there: as this project's
+    /// background, or as `use` says, such as for a background clip.
+    func useWallpaper(_ url: URL, use: ((BackgroundFill) -> Void)? = nil) {
+        let apply: (BackgroundFill) -> Void = use ?? { [weak self] in self?.setBackground($0) }
         if let existing = project.assets.first(where: { $0.kind == .image && $0.displayName == url.lastPathComponent }) {
-            setBackground(.wallpaper(existing.id))
+            apply(.wallpaper(existing.id))
             return
         }
-        importFiles([url]) { [weak self] asset in
-            self?.setBackground(.wallpaper(asset.id))
+        importFiles([url]) { asset in
+            apply(.wallpaper(asset.id))
         }
     }
 

@@ -22,6 +22,13 @@ struct RGBA: Hashable, Sendable, Codable {
         self.init(red: Double((hex >> 16) & 0xFF) / 255, green: Double((hex >> 8) & 0xFF) / 255,
                   blue: Double(hex & 0xFF) / 255, alpha: alpha)
     }
+
+    /// Whether two colors look the same: within three steps of 255 in each channel, too close to tell apart.
+    func isNear(_ other: RGBA) -> Bool {
+        let step = 3.0 / 255 + 1e-9
+        return abs(red - other.red) <= step && abs(green - other.green) <= step && abs(blue - other.blue) <= step
+            && abs(alpha - other.alpha) <= step
+    }
 }
 
 /// A two-color linear gradient. `angle` is in degrees: 0 runs left to right, 90 top to bottom.
@@ -45,19 +52,6 @@ enum BackgroundFill: Hashable, Sendable, Codable {
         (0x4F46E5, 0xEC4899), (0x0EA5E9, 0x22C55E), (0xF97316, 0xEF4444), (0x111827, 0x4B5563),
         (0x7C3AED, 0x06B6D4), (0xFDE68A, 0xF472B6), (0x064E3B, 0x10B981), (0x1E293B, 0x7C3AED),
     ].map { .gradient(GradientFill(from: RGBA(hex: $0.0), to: RGBA(hex: $0.1))) }
-}
-
-/// The whole-picture frame: the composed clips inset from the canvas edges, rounded and shadowed over the
-/// background. It needs a background to show around it, so it's off while there's none.
-struct PictureFrame: Hashable, Sendable, Codable {
-    /// How far the picture is inset on each side, as a share of the canvas size, 0 to 0.25.
-    var padding: Double = 0
-    /// 0 to 100.
-    var shadow: Double = 0
-    /// Corner radius as a share of the picture's shorter side, 0 to 0.25.
-    var corners: Double = 0
-
-    var isOff: Bool { padding == 0 && shadow == 0 && corners == 0 }
 }
 
 /// Fractions cut from each edge of a clip's source picture.

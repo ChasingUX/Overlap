@@ -289,7 +289,7 @@ struct StillClipTests {
         let plain = Clip(assetID: UUID(), start: .zero, sourceStart: .zero, duration: Time(seconds: 3))
         project.tracks[1].clips = [plain]
         var json = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(project)) as? [String: Any])
-        for key in ["canvasAspect", "background", "frame"] { json.removeValue(forKey: key) }
+        for key in ["canvasAspect", "background"] { json.removeValue(forKey: key) }
         // A clip saved before pictures could be placed.
         var tracks = try #require(json["tracks"] as? [[String: Any]])
         var clips = try #require(tracks[1]["clips"] as? [[String: Any]])
@@ -299,9 +299,46 @@ struct StillClipTests {
         let decoded = try JSONDecoder().decode(Project.self, from: JSONSerialization.data(withJSONObject: json))
         #expect(decoded.canvasAspect == .auto)
         #expect(decoded.background == nil)
-        #expect(decoded.frame.isOff)
         #expect(decoded.tracks[1].clips[0] == plain)
         #expect(decoded.tracks[0].clips[0].title?.text == "Hi")
+    }
+
+    @Test func aColorLikeABuiltInOneIsntKeptAgain() {
+        // The eyedropper picking the built-in near-black, one step off.
+        let picked = RGBA(red: 11 / 255, green: 11 / 255, blue: 16 / 255)
+        let (kept, use) = WallpaperLibrary.remembering(picked, replacing: nil, in: [])
+        #expect(kept.isEmpty)
+        #expect(use == RGBA(hex: 0x0C0B10))
+    }
+
+    @Test func aColorLikeAKeptOneUsesThatOne() {
+        let coral = RGBA(hex: 0xEF5A6F)
+        let purple = RGBA(hex: 0x4C1D95)
+        let (kept, use) = WallpaperLibrary.remembering(RGBA(hex: 0xF05A6E), replacing: nil, in: [purple, coral])
+        #expect(use == coral)
+        #expect(kept == [coral, purple])
+        // A new color goes first; adjusting it while picking replaces it rather than adding another.
+        let first = WallpaperLibrary.remembering(RGBA(hex: 0x336699), replacing: nil, in: kept)
+        #expect(first.kept == [RGBA(hex: 0x336699), coral, purple])
+        let adjusted = WallpaperLibrary.remembering(RGBA(hex: 0x3366CC), replacing: RGBA(hex: 0x336699), in: first.kept)
+        #expect(adjusted.kept == [RGBA(hex: 0x3366CC), coral, purple])
+    }
+
+    @Test func nearCopiesKeptEarlierArentShown() {
+        let gray = RGBA(hex: 0x9A9CA3)
+        let kept = [RGBA(hex: 0x0B0B10), gray, RGBA(hex: 0x9B9CA3)]
+        #expect(WallpaperLibrary.shown(kept) == [gray])
+    }
+
+    /// The Canvas tab had a whole-picture frame (padding, shadow and corners) until it was taken out. Projects saved
+    /// with one still open, without it.
+    @Test func projectsSavedWithAFrameStillOpen() throws {
+        var project = Project()
+        project.background = .color(RGBA(red: 0, green: 0, blue: 1))
+        var json = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(project)) as? [String: Any])
+        json["frame"] = ["padding": 0.1, "shadow": 40, "corners": 0.05]
+        let decoded = try JSONDecoder().decode(Project.self, from: JSONSerialization.data(withJSONObject: json))
+        #expect(decoded == project)
     }
 }
 
