@@ -5,6 +5,14 @@ import ImageIO
 struct Waveform: Sendable {
     let peaksPerSecond: Double
     let peaks: [Float]
+    /// Nothing louder than −60 dB anywhere: a track of silence, as screen recordings without a microphone carry.
+    let isSilent: Bool
+
+    init(peaksPerSecond: Double, peaks: [Float]) {
+        self.peaksPerSecond = peaksPerSecond
+        self.peaks = peaks
+        isSilent = peaks.allSatisfy { $0 < 0.001 }
+    }
 
     /// The loudest peak between two source times, 0 to 1.
     func peak(from start: Double, to end: Double) -> Float {

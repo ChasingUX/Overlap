@@ -304,3 +304,23 @@ struct StillClipTests {
         #expect(decoded.tracks[0].clips[0].title?.text == "Hi")
     }
 }
+
+/// Media whose sound is silence, as screen recordings without a microphone carry, counts as having none.
+struct SilentSoundTests {
+    @Test func aWaveformOfSilenceIsSilent() {
+        #expect(Waveform(peaksPerSecond: 100, peaks: Array(repeating: 0, count: 870)).isSilent)
+        #expect(Waveform(peaksPerSecond: 100, peaks: []).isSilent)
+        #expect(!Waveform(peaksPerSecond: 100, peaks: [0, 0, 0.2, 0]).isSilent)
+    }
+
+    @Test func silentMediaPlaysNoSound() {
+        var project = Project()
+        let video = Asset(id: UUID(), fileName: "r.mov", displayName: "r.mov", kind: .video, duration: Time(seconds: 8), hasAudio: true)
+        project.assets = [video]
+        let clip = Clip(assetID: video.id, start: .zero, sourceStart: .zero, duration: Time(seconds: 8))
+        project.tracks[0].clips = [clip]
+        #expect(project.playsSound(clip))
+        project.treatAsSilent([video.id])
+        #expect(!project.playsSound(clip))
+    }
+}

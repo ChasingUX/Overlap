@@ -938,6 +938,20 @@ enum DebugSnapshot {
                 send(.leftMouseUp, edge.minY - 100)
             }
 
+            // OVERLAP_SNAPSHOT_PANELEND=1 scrolls the panel to its end before the captures below.
+            if environment["OVERLAP_SNAPSHOT_PANELEND"] != nil, let content = NSApplication.shared.windows.first(where: \.isVisible)?.contentView {
+                func scrollViews(in view: NSView) -> [NSScrollView] {
+                    (view as? NSScrollView).map { [$0] } ?? view.subviews.flatMap(scrollViews)
+                }
+                for scroll in scrollViews(in: content) where scroll.frame.width < 400 {
+                    if let document = scroll.documentView {
+                        scroll.contentView.scroll(to: NSPoint(x: 0, y: max(0, document.frame.height - scroll.contentView.bounds.height)))
+                        scroll.reflectScrolledClipView(scroll.contentView)
+                    }
+                }
+                try? await Task.sleep(for: .milliseconds(300))
+            }
+
             for (index, window) in NSApplication.shared.windows.filter(\.isVisible).enumerated() {
                 guard let view = window.contentView?.superview ?? window.contentView,
                       let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { continue }

@@ -175,6 +175,14 @@ struct Project: Equatable, Sendable, Codable {
     }
 
     /// Whether a clip plays sound: any clip with audio, unless its sound was split off.
+    /// Takes media whose sound turned out to be silence as having none, so its clips show no sound and the
+    /// sound controls leave them be. Learned when the waveform is read, not saved as an edit.
+    mutating func treatAsSilent(_ ids: Set<UUID>) {
+        for index in assets.indices where ids.contains(assets[index].id) {
+            assets[index].hasAudio = false
+        }
+    }
+
     func playsSound(_ clip: Clip) -> Bool {
         asset(clip.assetID)?.hasAudio == true && clip.usesAudio
     }

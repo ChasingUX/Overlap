@@ -146,6 +146,8 @@ final class ProjectStore {
     func load(_ project: Project, mediaDirectory: URL) {
         var project = project
         project.normalizeTracks()
+        // A version put back still knows which files turned out to be silent.
+        project.treatAsSilent(silentAssets)
         self.project = project
         self.mediaDirectory = mediaDirectory
         // Opened, or put back to a saved version: nothing to save yet.
@@ -208,6 +210,8 @@ final class ProjectStore {
     private func restore(_ snapshot: Project, actionName: String) {
         let current = project
         project = snapshot
+        // Undo steps from before a file's silence was found still say it has sound.
+        project.treatAsSilent(silentAssets)
         registerUndo(restoring: current, actionName: actionName)
         isSaving = true
         changed?()
@@ -1057,6 +1061,7 @@ final class ProjectStore {
             }
             if asset.hasAudio, let waveform = await MediaAnalysis.waveform(for: url) {
                 waveforms[asset.id] = waveform
+                if waveform.isSilent { treatAsSilent(asset.id) }
             }
         }
         if asset.kind == .video {
@@ -1138,6 +1143,17 @@ final class ProjectStore {
     func trimToLoop(_ loop: Loop) {
         guard selection.count == 1, let id = selection.first else { return }
         apply("Trim to Loop") { $0.trimToLoop(id, from: Time(seconds: loop.start), to: Time(seconds: loop.end)) }
+    }
+
+    /// Media whose sound is silence from start to end. Its clips show no sound strip, and the sound controls leave
+    /// them be.
+    @ObservationIgnored private var silentAssets: Set<UUID> = []
+
+    private func treatAsSilent(_ id: UUID) {
+        silentAssets.insert(id)
+        guard project.asset(id)?.hasAudio == true else { return }
+        project.treatAsSilent([id])
+        projectDidChange()
     }
 
     /// Works out the isolated waveform of each recording that has a clip with Isolate voice on, once.

@@ -93,7 +93,7 @@ struct ComingLater: View {
         Text(text)
             .font(.system(size: 12))
             .foregroundStyle(.tertiary)
-            .fixedSize(horizontal: false, vertical: true)
+            .panelNoteLayout()
     }
 }
 
@@ -105,6 +105,16 @@ struct PanelNote: View {
         Text(text)
             .font(.system(size: 12))
             .foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
+            .panelNoteLayout()
+    }
+}
+
+extension View {
+    /// Help text under controls: wrapping to its lines, flush with the boxes' left edge rather than centered under
+    /// them, and set a little apart from them.
+    func panelNoteLayout() -> some View {
+        fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, 4)
     }
 }
