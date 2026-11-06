@@ -6,7 +6,7 @@ import CoreImage
 /// opposite corner, or from the middle with Option held), the top handle to rotate it, or in crop mode an edge
 /// to crop it. Clicking a picture selects it and shows its handles;
 /// clicking anywhere else in the preview, inside the canvas or around it, hides them. Double-clicking text types
-/// into it right there. Selecting on the timeline
+/// into it right there; double-clicking a picture crops it, and again stops. Selecting on the timeline
 /// doesn't show them. The overlay covers the whole preview, so handles off the canvas can still be grabbed.
 /// Drags show at once through the store's live preview and become one undo step on release.
 /// Holding ⌘ over the canvas's edge resizes the canvas instead (with ⌥, both sides at once), keeping everything on it
@@ -785,10 +785,19 @@ final class TransformOverlay: NSView {
             beginCanvasResize(edges, at: point)
             return
         }
-        // Double-clicking text types into it on the canvas.
-        if event.clickCount == 2, let (clip, _) = target(at: point), clip.title != nil {
-            store.beginEditingTitle(clip.id)
-            return
+        // Double-clicking text types into it on the canvas. Double-clicking inside a picture crops it, and again
+        // stops; a double-click on a handle is left to the handle.
+        if event.clickCount == 2, let (clip, found) = target(at: point) {
+            if clip.title != nil {
+                store.beginEditingTitle(clip.id)
+                return
+            }
+            if case .move = found {
+                drag = nil
+                draft = nil
+                store.toggleCropping(clip.id)
+                return
+            }
         }
         guard let (clip, found) = target(at: point) else {
             store.handlesClip = nil
@@ -932,6 +941,46 @@ extension TransformOverlay {
         }
         send(.leftMouseUp, CGPoint(x: start.x + offset.width, y: start.y + offset.height))
         return drawn
+    }
+
+    /// Double-clicks the middle of the first picture showing that isn't text, then again, reporting whether it was
+    /// being cropped after each. `midway` runs while it's being cropped.
+    func debugDoubleClickPicture(midway: () -> Void) async -> [String: Any] {
+        // The playhead moves into the first picture if none is showing.
+        if !visibleClips.contains(where: { $0.title == nil }), let project = state?.project,
+           let first = project.tracks.flatMap(\.clips).filter({ project.isPlaceable($0) && $0.title == nil }).min(by: { $0.start < $1.start }) {
+            store.playback.seek(to: Time(seconds: (first.start.seconds + first.end.seconds) / 2))
+            try? await Task.sleep(for: .milliseconds(800))
+        }
+        guard let clip = visibleClips.first(where: { $0.title == nil }), let window else {
+            return ["error": "no picture showing", "showing": visibleClips.count, "hasState": state != nil]
+        }
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        try? await Task.sleep(for: .milliseconds(300))
+        let middle = view(center(of: clip.visual))
+        let doubleClick = {
+            for clicks in [1, 2] {
+                for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                    guard let event = NSEvent.mouseEvent(with: type, location: self.convert(middle, to: nil), modifierFlags: [],
+                                                         timestamp: ProcessInfo.processInfo.systemUptime,
+                                                         windowNumber: window.windowNumber, context: nil, eventNumber: 0,
+                                                         clickCount: clicks, pressure: type == .leftMouseUp ? 0 : 1)
+                    else { continue }
+                    NSApplication.shared.postEvent(event, atStart: false)
+                    try? await Task.sleep(for: .milliseconds(40))
+                }
+                try? await Task.sleep(for: .milliseconds(80))
+            }
+            try? await Task.sleep(for: .milliseconds(400))
+        }
+        await doubleClick()
+        let first: [String: Any] = ["cropping": store.isCropping, "handles": store.handlesClip == clip.id,
+                                    "selected": store.selection == [clip.id]]
+        midway()
+        await doubleClick()
+        return ["first": first, "second": ["cropping": store.isCropping, "handles": store.handlesClip == clip.id],
+                "visual unchanged": store.project.clip(clip.id)?.visual == clip.visual]
     }
 
     /// Double-clicks the first text showing, types `text` into it, calls `midway` while it's being edited, then

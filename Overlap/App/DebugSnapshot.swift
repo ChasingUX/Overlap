@@ -380,6 +380,20 @@ enum DebugSnapshot {
                 }
             }
 
+            // OVERLAP_SNAPSHOT_CROPCLICK=1 double-clicks the first picture showing, captures the window as
+            // `<prefix>-cropping.png`, then double-clicks it again.
+            var cropClickReport: [String: Any] = [:]
+            if environment["OVERLAP_SNAPSHOT_CROPCLICK"] != nil,
+               let overlay = NSApplication.shared.windows.lazy.compactMap({ $0.contentView.flatMap { find(TransformOverlay.self, in: $0) } }).first {
+                cropClickReport = await overlay.debugDoubleClickPicture {
+                    if let window = overlay.window, let view = window.contentView?.superview,
+                       let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+                        view.cacheDisplay(in: view.bounds, to: bitmap)
+                        try? bitmap.representation(using: .png, properties: [:])?.write(to: URL(filePath: "\(prefix)-cropping.png"))
+                    }
+                }
+            }
+
             // OVERLAP_SNAPSHOT_EXPORT=sheet opens the Export sheet. A format name (mp4, mov, wav, aiff, m4a) also
             // exports through it, as pressing Export does, into the snapshot's folder, and reports the file; fail
             // exports to a folder that isn't there. The sheet is captured as <prefix>-export.png, mid-export as
@@ -999,6 +1013,7 @@ enum DebugSnapshot {
                     "speedPreview": speedReport,
                     "handle": handleReport,
                     "textEdit": textEditReport,
+                    "cropClick": cropClickReport,
                     "export": exportReport,
                     "perf": perfReport,
                     "windowResize": windowResize,

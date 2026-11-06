@@ -335,6 +335,18 @@ final class ProjectStore {
         }
     }
 
+    /// Double-clicking a picture in the preview: crops it, selecting it and showing its crop handles, or, if it's
+    /// already being cropped, stops.
+    func toggleCropping(_ id: UUID) {
+        if isCropping, handlesClip == id {
+            isCropping = false
+            return
+        }
+        if selection != [id] { select([id]) }
+        handlesClip = id
+        isCropping = true
+    }
+
     /// Changes the selected text clips' text or look, as one undo step.
     func setTitle(_ name: String, _ change: @escaping (inout Title) -> Void) {
         let ids = editableSelection.filter { project.clip($0)?.title != nil }
