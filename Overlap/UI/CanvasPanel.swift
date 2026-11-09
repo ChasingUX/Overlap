@@ -226,8 +226,8 @@ struct BackgroundPicker: View {
             }
             LazyVGrid(columns: Self.colorColumns, spacing: 10) {
                 ForEach(WallpaperLibrary.customColors.map { BackgroundFill.color($0) }, id: \.self, content: colorSwatch)
-                AddColorSwatch(color: selectedColor, onChange: { onPreview(.color($0)) },
-                               onActiveChange: { isPickingColor = $0 }) { color, earlier in
+                ColorWellSwatch(color: selectedColor, onChange: { onPreview(.color($0)) },
+                                onActiveChange: { isPickingColor = $0 }) { color, earlier in
                     onSelect(.color(WallpaperLibrary.remember(color, replacing: earlier)))
                 }
                 .frame(width: SwatchMetrics.circle, height: SwatchMetrics.circle)
@@ -310,6 +310,8 @@ struct BackgroundPicker: View {
 /// Swatch sizes, and how far outside a swatch the ring marking it sits.
 enum SwatchMetrics {
     static let circle: CGFloat = 24
+    /// A color swatch at the end of a row, a little smaller than the picker's.
+    static let rowCircle: CGFloat = 20
     static let tileRadius: CGFloat = 6
     static let ringWidth: CGFloat = 2
     /// The ring's outer edge: a two-point gap, then the ring.

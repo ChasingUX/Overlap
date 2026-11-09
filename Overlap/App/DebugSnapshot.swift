@@ -726,7 +726,7 @@ enum DebugSnapshot {
                 store.activeTab = .canvas
                 try? await Task.sleep(for: .milliseconds(300))
                 let saved = UserDefaults.standard.data(forKey: "customBackgroundColors")
-                if let well = find(AddColorWell.self, in: content) {
+                if let well = find(SwatchColorWell.self, in: content) {
                     NSApplication.shared.activate(ignoringOtherApps: true)
                     window.makeKeyAndOrderFront(nil)
                     let point = well.convert(CGPoint(x: well.bounds.midX, y: well.bounds.midY), to: nil)

@@ -65,12 +65,20 @@ private struct TitleEditor: View {
 
     var body: some View {
         PanelGroup(title: "Title") {
-            MenuRow(title: "Font", value: title.fontFamily.isEmpty ? "System" : title.fontFamily) {
-                Toggle("System", isOn: Binding(get: { title.fontFamily.isEmpty }, set: { _ in store.setTitle("Change Font") { $0.fontFamily = "" } }))
-                Divider()
-                ForEach(Self.families, id: \.self) { family in
-                    Toggle(family, isOn: Binding(get: { title.fontFamily == family },
-                                                 set: { _ in store.setTitle("Change Font") { $0.fontFamily = family } }))
+            PanelCard {
+                MenuRow(title: "Font", value: title.fontFamily.isEmpty ? "System" : title.fontFamily) {
+                    Toggle("System", isOn: Binding(get: { title.fontFamily.isEmpty }, set: { _ in store.setTitle("Change Font") { $0.fontFamily = "" } }))
+                    Divider()
+                    ForEach(Self.families, id: \.self) { family in
+                        Toggle(family, isOn: Binding(get: { title.fontFamily == family },
+                                                     set: { _ in store.setTitle("Change Font") { $0.fontFamily = family } }))
+                    }
+                }
+                MenuRow(title: "Weight", value: title.weight.name) {
+                    ForEach(TitleWeight.allCases, id: \.self) { weight in
+                        Toggle(weight.name, isOn: Binding(get: { title.weight == weight },
+                                                          set: { _ in store.setTitle("Change Weight") { $0.weight = weight } }))
+                    }
                 }
             }
             BoxSlider(title: "Size", value: title.size, range: 12...300, format: { "\(Int($0.rounded())) pt" }, defaultValue: 96,
@@ -78,24 +86,18 @@ private struct TitleEditor: View {
                       onCommit: { size in store.setTitle("Change Size") { $0.size = size } },
                       // 96 pt is only where a style starts, so the size doesn't catch on it.
                       detents: [])
-            OptionGrid(options: TitleWeight.allCases.map { ($0.name, $0) }, selected: title.weight) { weight in
-                store.setTitle("Change Weight") { $0.weight = weight }
-            }
-            ColorRow(title: "Color", color: title.color,
-                     onChange: { color in store.previewTitle { $0.color = color } },
-                     onCommit: { color in store.setTitle("Change Text Color") { $0.color = color } })
-            OptionRow(options: [("Left", TitleAlignment.leading), ("Center", .center), ("Right", .trailing)], selected: title.alignment) { alignment in
-                store.setTitle("Change Alignment") { $0.alignment = alignment }
-            }
-            ToggleRow(title: "Backdrop", isOn: title.backdrop != nil) { on in
-                store.setTitle(on ? "Add Backdrop" : "Remove Backdrop") { $0.backdrop = on ? RGBA(red: 0, green: 0, blue: 0, alpha: 0.55) : nil }
-            }
-            if let backdrop = title.backdrop {
-                ColorRow(title: "Backdrop color", color: RGBA(red: backdrop.red, green: backdrop.green, blue: backdrop.blue),
-                         onChange: { color in store.previewTitle { $0.backdrop = RGBA(red: color.red, green: color.green, blue: color.blue, alpha: backdrop.alpha) } },
-                         onCommit: { color in
-                             store.setTitle("Change Backdrop") { $0.backdrop = RGBA(red: color.red, green: color.green, blue: color.blue, alpha: backdrop.alpha) }
-                         })
+            PanelCard {
+                ColorRow(title: "Color", color: title.color,
+                         onChange: { color in store.previewTitle { $0.color = color } },
+                         onCommit: { color in store.setTitle("Change Text Color") { $0.color = color } })
+                ControlRow(title: "Align") {
+                    IconChoices(options: [("Left", "text.alignleft", TitleAlignment.leading), ("Center", "text.aligncenter", .center),
+                                          ("Right", "text.alignright", .trailing)],
+                                selected: title.alignment) { alignment in
+                        store.setTitle("Change Alignment") { $0.alignment = alignment }
+                    }
+                }
+                backdropRow
             }
         }
 
@@ -110,6 +112,32 @@ private struct TitleEditor: View {
             }
         }
         ComingLater(text: "Double-click the text in the preview to change it. Drag it there, or use the Video tab, to place and size it.")
+    }
+
+    /// The backdrop's switch, with its color beside it while it's on. Its color keeps its see-through amount.
+    private var backdropRow: some View {
+        ControlRow(title: "Backdrop") {
+            HStack(spacing: 10) {
+                if let backdrop = title.backdrop {
+                    ColorSwatch(name: "Backdrop color", color: RGBA(red: backdrop.red, green: backdrop.green, blue: backdrop.blue),
+                                onChange: { color in
+                                    store.previewTitle { $0.backdrop = RGBA(red: color.red, green: color.green, blue: color.blue, alpha: backdrop.alpha) }
+                                },
+                                onCommit: { color in
+                                    store.setTitle("Change Backdrop") {
+                                        $0.backdrop = RGBA(red: color.red, green: color.green, blue: color.blue, alpha: backdrop.alpha)
+                                    }
+                                })
+                }
+                Toggle("Backdrop", isOn: Binding(get: { title.backdrop != nil }, set: { on in
+                    store.setTitle(on ? "Add Backdrop" : "Remove Backdrop") { $0.backdrop = on ? RGBA(red: 0, green: 0, blue: 0, alpha: 0.55) : nil }
+                }))
+                .toggleStyle(.switch)
+                .controlSize(.small)
+                .labelsHidden()
+            }
+            .padding(.trailing, PanelMetrics.valueInset)
+        }
     }
 }
 

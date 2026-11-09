@@ -371,48 +371,93 @@ struct ColorRow: View {
     var onChange: ((RGBA) -> Void)?
     let onCommit: (RGBA) -> Void
 
-    @State private var settle: Task<Void, Never>?
+    @Environment(\.isInPanelCard) private var isInCard
 
     var body: some View {
         ControlRow(title: title) {
-            ColorPicker(title, selection: Binding(get: { Color(rgba: color) }, set: { picked in
-                let rgba = RGBA(picked)
-                onChange?(rgba)
-                settle?.cancel()
-                settle = Task {
-                    try? await Task.sleep(for: .milliseconds(400))
-                    guard !Task.isCancelled else { return }
-                    onCommit(rgba)
-                }
-            }), supportsOpacity: false)
-            .labelsHidden()
-            .padding(.trailing, PanelMetrics.insidePadding - PanelMetrics.pillInset - 2)
+            ColorSwatch(name: title, color: color, onChange: { onChange?($0) }, onCommit: onCommit)
+                .padding(.trailing, isInCard ? PanelMetrics.valueInset : PanelMetrics.insidePadding - PanelMetrics.pillInset - 2)
         }
     }
 }
 
-/// A swatch with a +, for a color of your own: it opens the system color panel, shows each change as it's
-/// made, and keeps the color once you stop changing it for a moment. It's a color well underneath, so it takes
-/// turns with the other color controls for the one panel.
-struct AddColorSwatch: NSViewRepresentable {
+/// A round swatch of a color, for a row: clicking it opens the color panel for it, ringed meanwhile. Each change
+/// shows as it's made, and the color is kept once you stop changing it for a moment.
+struct ColorSwatch: View {
+    let name: String
+    let color: RGBA
+    let onChange: (RGBA) -> Void
+    let onCommit: (RGBA) -> Void
+
+    @State private var isPicking = false
+
+    var body: some View {
+        ColorWellSwatch(color: color, showsColor: true, onChange: onChange, onActiveChange: { isPicking = $0 }) { color, _ in
+            onCommit(color)
+        }
+        .frame(width: SwatchMetrics.rowCircle, height: SwatchMetrics.rowCircle)
+        .overlay { SwatchRing(isRound: true, isSelected: isPicking, isHovered: false) }
+        .accessibilityLabel(name)
+    }
+}
+
+/// Choices shown as icons, plain on the box; the chosen one sits on a raised pill. Each icon's name is its tooltip.
+struct IconChoices<Value: Equatable>: View {
+    let options: [(name: String, symbol: String, value: Value)]
+    let selected: Value?
+    let onSelect: (Value) -> Void
+
+    @Environment(\.isInPanelCard) private var isInCard
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(options.indices, id: \.self) { index in
+                let option = options[index]
+                let isChosen = option.value == selected
+                Button { onSelect(option.value) } label: {
+                    Image(systemName: option.symbol)
+                        .font(.system(size: 13))
+                        .frame(width: 30, height: valueHeight(inCard: isInCard))
+                        .foregroundStyle(isChosen ? Color.primary : Color.secondary)
+                        .background {
+                            if isChosen { ChosenPill() }
+                        }
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(option.name)
+                .accessibilityLabel(option.name)
+                .accessibilityAddTraits(isChosen ? .isSelected : [])
+            }
+        }
+    }
+}
+
+/// A round swatch that opens the system color panel, shows each change as it's made, and keeps the color once you
+/// stop changing it for a moment: a dark one with a +, for a color of your own, or one showing its color. It's a
+/// color well underneath, so it takes turns with the other color controls for the one panel.
+struct ColorWellSwatch: NSViewRepresentable {
     /// Where the panel starts.
     let color: RGBA
+    /// Shows the color itself rather than a +.
+    var showsColor = false
     let onChange: (RGBA) -> Void
     /// Whether the color panel is picking for this swatch, so it can show the chosen ring meanwhile.
     var onActiveChange: (Bool) -> Void = { _ in }
     /// The color kept, and the one kept earlier while picking this time, which it replaces.
     let onCommit: (RGBA, _ earlier: RGBA?) -> Void
 
-    func makeNSView(context: Context) -> AddColorWell {
-        AddColorWell()
+    func makeNSView(context: Context) -> SwatchColorWell {
+        SwatchColorWell()
     }
 
-    /// As big as the grid's other swatches, not a color well's own size.
-    func sizeThatFits(_ proposal: ProposedViewSize, nsView: AddColorWell, context: Context) -> CGSize? {
+    /// As big as the swatches around it, not a color well's own size.
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: SwatchColorWell, context: Context) -> CGSize? {
         CGSize(width: proposal.width ?? 26, height: proposal.height ?? 26)
     }
 
-    func updateNSView(_ well: AddColorWell, context: Context) {
+    func updateNSView(_ well: SwatchColorWell, context: Context) {
+        well.showsColor = showsColor
         well.onChange = onChange
         well.onCommit = onCommit
         well.onActiveChange = onActiveChange
@@ -445,7 +490,10 @@ struct EyedropperSwatch: View {
     }
 }
 
-final class AddColorWell: NSColorWell {
+final class SwatchColorWell: NSColorWell {
+    var showsColor = false {
+        didSet { if showsColor != oldValue { needsDisplay = true } }
+    }
     var onChange: ((RGBA) -> Void)?
     var onCommit: ((RGBA, RGBA?) -> Void)?
     var onActiveChange: ((Bool) -> Void)?
@@ -505,15 +553,16 @@ final class AddColorWell: NSColorWell {
         }
     }
 
-    /// Drawn as a swatch rather than a well: a dark circle with a +, like the eyedropper beside it. The ring marking
-    /// it while the panel picks for it is drawn around it by the picker.
+    /// Drawn as a swatch rather than a well: its color, or a dark circle with a +, like the eyedropper beside it.
+    /// The ring marking it while the panel picks for it is drawn around it by the view it sits in.
     override func draw(_ dirtyRect: NSRect) {
         let circle = NSBezierPath(ovalIn: bounds.insetBy(dx: 0.5, dy: 0.5))
-        NSColor.black.withAlphaComponent(SwatchMetrics.toolShade).setFill()
+        (showsColor ? color : NSColor.black.withAlphaComponent(SwatchMetrics.toolShade)).setFill()
         circle.fill()
         NSColor.white.withAlphaComponent(0.14).setStroke()
         circle.lineWidth = 1
         circle.stroke()
+        guard !showsColor else { return }
         let symbol = NSImage(systemSymbolName: "plus", accessibilityDescription: nil)?
             .withSymbolConfiguration(.init(pointSize: 11, weight: .medium)
                 .applying(.init(paletteColors: [.secondaryLabelColor])))
