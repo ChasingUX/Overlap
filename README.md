@@ -14,9 +14,10 @@ for the one-time step macOS asks for. After that, Overlap updates itself.
 - **Timeline:** tracks of video, sound, images, titles and backgrounds. Trim, split, ripple delete, change speed
   with or without keeping pitch, fade in and out, and crossfade by overlapping two clips. Tracks can be muted,
   soloed and locked.
-- **Picture:** a canvas that follows the first video, takes a named shape (widescreen, vertical, square, portrait,
-  classic) or any size you type. A background of a color, gradient or wallpaper, framed with padding, a shadow and
-  rounded corners. Each picture can be moved, scaled, rotated, cropped and color-adjusted.
+- **Picture:** a canvas that follows the first video, or any size you drag its edges to in the preview, at the first
+  video's frame rate. A background of a mesh gradient, a color, your own image or one of the Mac's aerial wallpapers,
+  which frames the picture with padding, a shadow and rounded corners. Each picture can be moved, scaled, rotated,
+  cropped and color-adjusted.
 - **Titles:** ready-made styles (centered title, lower third, caption, bold intro), edited on the canvas, with
   animations in and out.
 - **Sound:** per-clip volume, Isolate voice to take out background noise, and a master volume. Exports can be

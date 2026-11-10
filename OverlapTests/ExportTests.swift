@@ -207,13 +207,14 @@ struct ExportTests {
         urls[main.id] = mainURL
         urls[inset.id] = insetURL
         project.assets += [main, inset]
-        project.canvas = Canvas(width: 640, height: 360, frameRate: 30)
+        project.canvas = Canvas(width: 640, height: 360)
         project.background = .gradient(GradientFill(from: .black, to: .white, angle: 90))
+        project.frame = PictureFrame(shadow: 40, corners: 0.05)
         var framed = pictures.clip(main, length: 4)
-        framed.visual = Visual(scale: 0.8, corners: 0.05, shadow: 40)
+        framed.visual = Visual(scale: 0.8)
         project.tracks[1].clips = [framed]
         var small = pictures.clip(inset, length: 4)
-        small.visual = Visual(x: 0.3, y: -0.3, scale: 0.25, corners: 0.1, shadow: 50)
+        small.visual = Visual(x: 0.3, y: -0.3, scale: 0.25)
         project.tracks[2].clips = [small]
         var title = Title(text: "██████", size: 50, animationIn: .none, animationOut: .none)
         title.color = .white
@@ -249,7 +250,7 @@ struct ExportTests {
         let clip = pictures.asset(url, kind: .video)
         var project = Project()
         project.assets = [clip]
-        project.canvas = Canvas(width: 1920, height: 1080, frameRate: 30)
+        project.canvas = Canvas(width: 1920, height: 1080)
         project.tracks[0].clips = [pictures.clip(clip)]
         var settings = ExportSettings()
         settings.videoFormat = .mov
@@ -268,7 +269,7 @@ struct ExportTests {
     @Test func cancelingAVideoMidwayStops() async throws {
         let (tone, urls) = toneProject(try makeTone(decibels: -30, seconds: 20), seconds: 20)
         var project = tone
-        project.canvas = Canvas(width: 1920, height: 1080, frameRate: 30)
+        project.canvas = Canvas(width: 1920, height: 1080)
         project.addBackground(.gradient(GradientFill(from: .black, to: .white)), at: .zero, target: .new(at: 1))
         let clip = try #require(project.tracks[1].clips.first?.id)
         project.tracks[1].clips[0].duration = Time(seconds: 20)
@@ -287,12 +288,12 @@ struct ExportTests {
     }
 
     @Test func resolutionsStayAtOrBelowTheCanvas() {
-        #expect(ExportSettings.resolutions(below: Canvas(width: 1920, height: 1080, frameRate: 30)) == [nil, 720])
-        #expect(ExportSettings.resolutions(below: Canvas(width: 3840, height: 2160, frameRate: 30)) == [nil, 1080, 720])
+        #expect(ExportSettings.resolutions(below: Canvas(width: 1920, height: 1080)) == [nil, 720])
+        #expect(ExportSettings.resolutions(below: Canvas(width: 3840, height: 2160)) == [nil, 1080, 720])
         var settings = ExportSettings()
         settings.resolution = 1080
         // Portrait keeps its shape: 1080p means the shorter side.
-        #expect(settings.pictureSize(for: Canvas(width: 2160, height: 3840, frameRate: 30)) == (1080, 1920))
+        #expect(settings.pictureSize(for: Canvas(width: 2160, height: 3840)) == (1080, 1920))
     }
 }
 

@@ -235,7 +235,7 @@ struct TransitionPanel: View {
                 }
             }
         } else {
-            PlaceholderPanel(icon: .transitions, title: "Select a crossfade",
+            PlaceholderPanel(title: "Select a crossfade",
                              message: "Overlap two clips on one track, then click where they overlap.")
         }
     }

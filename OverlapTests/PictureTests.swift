@@ -21,7 +21,7 @@ struct PictureTests {
     static let green = RGBA(red: 0, green: 1, blue: 0)
     static let blue = RGBA(red: 0, green: 0, blue: 1)
 
-    let canvas = Canvas(width: 320, height: 180, frameRate: 30)
+    let canvas = Canvas(width: 320, height: 180)
     let directory = FileManager.default.temporaryDirectory.appending(path: "PictureTests-\(UUID().uuidString)")
 
     // MARK: Sources
@@ -213,8 +213,9 @@ struct PictureTests {
         project.assets = [image]
         let dark = RGBA(red: 0.11, green: 0.11, blue: 0.118)
         project.background = .color(dark)
+        project.frame = PictureFrame(shadow: 100)
         var still = clip(image)
-        still.visual = Visual(scale: 0.6, shadow: 100)
+        still.visual = Visual(scale: 0.6)
         project.tracks[0].clips = [still]
         let rendered = try await frame(of: project, urls: [image.id: url], at: 1)
         // The picture ends at 0.8 down. Just below it the background is clearly darker; further down it's untouched.
@@ -246,12 +247,40 @@ struct PictureTests {
         var project = Project()
         project.assets = [image]
         project.background = .color(Self.blue)
-        var still = clip(image)
-        still.visual.corners = 0.3
-        project.tracks[0].clips = [still]
+        project.frame = PictureFrame(corners: 0.3)
+        project.tracks[0].clips = [clip(image)]
         let rendered = try await frame(of: project, urls: [image.id: url], at: 1)
         #expect(try pixel(rendered, x: 0.01, y: 0.02).isClose(to: Self.blue))
         #expect(try pixel(rendered, x: 0.5, y: 0.5).isClose(to: Self.red))
+    }
+
+    @Test func theFrameInsetsAndRoundsThePicture() async throws {
+        let url = try makeImage(Self.red, width: 320, height: 180)
+        let image = asset(url, kind: .image)
+        var project = Project()
+        project.assets = [image]
+        project.tracks[0].clips = [clip(image)]
+        project.setBackground(.color(Self.blue))
+        project.frame?.shadow = 0
+        project.frame?.corners = 0.3
+        let rendered = try await frame(of: project, urls: [image.id: url], at: 1)
+        // A tenth of the canvas on each side shows the background; past it is the picture, rounded at its corners.
+        #expect(try pixel(rendered, x: 0.05, y: 0.5).isClose(to: Self.blue))
+        #expect(try pixel(rendered, x: 0.5, y: 0.05).isClose(to: Self.blue))
+        #expect(try pixel(rendered, x: 0.15, y: 0.5).isClose(to: Self.red))
+        #expect(try pixel(rendered, x: 0.5, y: 0.5).isClose(to: Self.red))
+        #expect(try pixel(rendered, x: 0.11, y: 0.12).isClose(to: Self.blue))
+    }
+
+    @Test func meshGradientDrawsItsPools() async throws {
+        let lilac = try #require(MeshFill.presets.first)
+        var project = Project()
+        project.addBackground(.mesh(lilac), at: .zero, target: .existing(project.tracks[0].id))
+        let rendered = try await frame(of: project, urls: [:], at: 1)
+        // The cyan pool on top sits at the top edge, 80% across; the base lilac shows where the pools thin out.
+        #expect(try pixel(rendered, x: 0.8, y: 0.01).isClose(to: RGBA(hue: 182, saturation: 100, lightness: 56), within: 0.1))
+        let middle = try pixel(rendered, x: 0.5, y: 0.5)
+        #expect(middle.blue > middle.green)
     }
 
     @Test func gradientRunsFromItsFirstColor() async throws {
@@ -271,11 +300,12 @@ struct PictureTests {
         var project = Project()
         project.assets = [main, inset]
         project.background = .gradient(GradientFill(from: .black, to: .white, angle: 90))
+        project.frame = PictureFrame(shadow: 40, corners: 0.05)
         var framed = clip(main)
-        framed.visual = Visual(scale: 0.8, corners: 0.05, shadow: 40)
+        framed.visual = Visual(scale: 0.8)
         project.tracks[0].clips = [framed]
         var small = clip(inset)
-        small.visual = Visual(x: 0.3, y: -0.3, scale: 0.25, corners: 0.1, shadow: 50)
+        small.visual = Visual(x: 0.3, y: -0.3, scale: 0.25)
         project.tracks[1].clips = [small]
         var title = Title(text: "██████", size: 50, animationIn: .none, animationOut: .none)
         title.color = .white

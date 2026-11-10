@@ -319,6 +319,16 @@ struct SliderDetentTests {
         #expect(BoxSlider.detent(for: 88, among: [-90, 0, 90], reach: 3) == 90)
     }
 
+    @Test func aTickFallsOnTheDefault() {
+        // Padding's default, 10% of 0 to 25%, sits 40% along: the ticks shift so one is there, still an eighth apart.
+        let ticks = BoxSlider.tickFractions(firstStop: 0.4)
+        #expect(ticks.contains { abs($0 - 0.4) < 1e-9 })
+        #expect(zip(ticks, ticks.dropFirst()).allSatisfy { abs($1 - $0 - 0.125) < 1e-9 })
+        // A default in the middle, or none, leaves them on the eighths.
+        #expect(BoxSlider.tickFractions(firstStop: 0.5).map { ($0 * 8).rounded() } == [1, 2, 3, 4, 5, 6, 7])
+        #expect(BoxSlider.tickFractions(firstStop: nil).count == 7)
+    }
+
     @Test func letsGoOutsideReach() {
         #expect(BoxSlider.detent(for: 0.06, among: [0], reach: 0.05) == nil)
         #expect(BoxSlider.detent(for: 45, among: [-90, 0, 90], reach: 3) == nil)

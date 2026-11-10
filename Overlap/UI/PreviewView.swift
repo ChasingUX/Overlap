@@ -56,7 +56,8 @@ final class PlayerLayerView: NSView {
         wantsLayer = true
         playerLayer.player = player
         playerLayer.videoGravity = .resizeAspect
-        playerLayer.backgroundColor = NSColor.black.cgColor
+        // The empty canvas, as the compositor draws it, until the first frame is drawn.
+        playerLayer.backgroundColor = CGColor(srgbRed: 0x16 / 255, green: 0x16 / 255, blue: 0x18 / 255, alpha: 1)
         playerLayer.cornerRadius = Self.cornerRadius
         playerLayer.cornerCurve = .continuous
         playerLayer.masksToBounds = true

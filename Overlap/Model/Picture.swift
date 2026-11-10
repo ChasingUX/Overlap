@@ -23,6 +23,25 @@ struct RGBA: Hashable, Sendable, Codable {
                   blue: Double(hex & 0xFF) / 255, alpha: alpha)
     }
 
+    /// From CSS-style HSL: hue in degrees, saturation and lightness 0 to 100.
+    init(hue: Double, saturation: Double, lightness: Double, alpha: Double = 1) {
+        let s = saturation / 100
+        let l = lightness / 100
+        let chroma = (1 - abs(2 * l - 1)) * s
+        let sector = (hue.truncatingRemainder(dividingBy: 360) + 360).truncatingRemainder(dividingBy: 360) / 60
+        let second = chroma * (1 - abs(sector.truncatingRemainder(dividingBy: 2) - 1))
+        let (r, g, b): (Double, Double, Double) = switch sector {
+        case ..<1: (chroma, second, 0)
+        case ..<2: (second, chroma, 0)
+        case ..<3: (0, chroma, second)
+        case ..<4: (0, second, chroma)
+        case ..<5: (second, 0, chroma)
+        default: (chroma, 0, second)
+        }
+        let lift = l - chroma / 2
+        self.init(red: r + lift, green: g + lift, blue: b + lift, alpha: alpha)
+    }
+
     /// Whether two colors look the same: within three steps of 255 in each channel, too close to tell apart.
     func isNear(_ other: RGBA) -> Bool {
         let step = 3.0 / 255 + 1e-9
@@ -41,17 +60,37 @@ struct GradientFill: Hashable, Sendable, Codable {
 /// What fills the canvas behind the picture, or what a background clip shows.
 enum BackgroundFill: Hashable, Sendable, Codable {
     case color(RGBA)
+    /// A two-color linear gradient, as projects made before mesh gradients have.
     case gradient(GradientFill)
+    case mesh(MeshFill)
     /// An image asset in the project.
     case wallpaper(UUID)
 
-    /// Built-in swatches, shown first in the Canvas tab.
-    static let colors: [BackgroundFill] = [0x0C0B10, 0xF5F5F7, 0x1C1C1E, 0x2C3E50, 0x1E3A8A, 0x0F766E]
-        .map { .color(RGBA(hex: $0)) }
-    static let gradients: [BackgroundFill] = [
-        (0x4F46E5, 0xEC4899), (0x0EA5E9, 0x22C55E), (0xF97316, 0xEF4444), (0x111827, 0x4B5563),
-        (0x7C3AED, 0x06B6D4), (0xFDE68A, 0xF472B6), (0x064E3B, 0x10B981), (0x1E293B, 0x7C3AED),
-    ].map { .gradient(GradientFill(from: RGBA(hex: $0.0), to: RGBA(hex: $0.1))) }
+    /// Built-in plain colors, in two rows: deep ones, from black and white through the hues, then soft ones.
+    static let colors: [BackgroundFill] = [
+        0x141414, 0xFFFFFF, 0xDB5B5D, 0xEE9C4D, 0xECB851, 0x519C6A, 0x4D9DE7, 0x935BF0, 0xE2709A,
+        0x3A3A3C, 0xEFEFEF, 0xF4CBC3, 0xF8D08F, 0xF7E3A9, 0xBCE9C9, 0xBEDDF7, 0xDAC5F7,
+    ].map { .color(RGBA(hex: $0)) }
+    /// Built-in gradients: two rows of them, with Show More for any past that.
+    static let gradients: [BackgroundFill] = MeshFill.presets.map { .mesh($0) }
+}
+
+/// How pictures sit on a background: scaled in from the canvas edges by the padding, with rounded corners and a
+/// shadow. Titles move and shrink with the pictures, so a layout stays as it was, but keep their own look. At its
+/// defaults it leaves the pictures as they are.
+struct PictureFrame: Hashable, Sendable, Codable {
+    /// How far the pictures are inset on each side, as a share of the canvas, 0 to 0.25.
+    var padding = 0.0
+    /// 0 to 100.
+    var shadow = 0.0
+    /// Corner radius as a share of each picture's shorter side, 0 to 0.5.
+    var corners = 0.0
+
+    static let standard = PictureFrame(padding: 0.1, shadow: 50, corners: 0.025)
+    static let paddingRange = 0.0...0.25
+
+    /// How much the padding shrinks the pictures, about the canvas center.
+    var scale: Double { 1 - 2 * padding.clamped(to: Self.paddingRange) }
 }
 
 /// Fractions cut from each edge of a clip's source picture.
@@ -77,7 +116,9 @@ struct ColorAdjustment: Hashable, Sendable, Codable {
     var isNeutral: Bool { exposure == 0 && contrast == 1 && saturation == 1 && temperature == 0 }
 }
 
-/// How a clip's picture sits in the canvas. At the defaults it fills the canvas as large as it fits, centered.
+/// How a clip's picture sits in the canvas. At the defaults it fills the canvas as large as it fits, centered. Its
+/// corners and shadow come from the project's frame; projects saved when each clip had its own still open, without
+/// them.
 struct Visual: Hashable, Sendable, Codable {
     /// The picture's center, offset from the canvas center, as a share of the canvas width and height. y runs down.
     var x = 0.0
@@ -88,10 +129,6 @@ struct Visual: Hashable, Sendable, Codable {
     var rotation = 0.0
     var crop = Crop()
     var opacity = 1.0
-    /// Corner radius as a share of the picture's shorter side, 0 to 0.5.
-    var corners = 0.0
-    /// 0 to 100.
-    var shadow = 0.0
     var color = ColorAdjustment()
 
     static let scaleRange = 0.05...4.0
@@ -112,7 +149,8 @@ enum VideoTransition: String, Hashable, Sendable, Codable, CaseIterable {
     }
 }
 
-/// The canvas shape. Auto follows the first video added; the others are fixed sizes, or a custom one.
+/// How the canvas got its size. Auto follows the first video added; Custom is a size dragged to on the preview.
+/// The named shapes are from when the Canvas tab offered them, kept so projects that chose one still open.
 enum CanvasAspect: String, Hashable, Sendable, Codable, CaseIterable {
     case auto
     case wide = "16:9"
@@ -121,62 +159,6 @@ enum CanvasAspect: String, Hashable, Sendable, Codable, CaseIterable {
     case portrait = "4:5"
     case standard = "4:3"
     case custom
-
-    var name: String {
-        switch self {
-        case .auto: "Auto"
-        case .custom: "Custom"
-        default: rawValue
-        }
-    }
-
-    /// What the shape is for, as the Canvas tab's menu names it.
-    var title: String {
-        switch self {
-        case .auto: "Auto"
-        case .wide: "Widescreen"
-        case .tall: "Vertical"
-        case .square: "Square"
-        case .portrait: "Portrait"
-        case .standard: "Classic"
-        case .custom: "Custom"
-        }
-    }
-
-    /// Width over height, for the fixed shapes.
-    var ratio: Double? {
-        size.map { Double($0.width) / Double($0.height) }
-    }
-
-    /// The fixed shape a size has, if it has one.
-    static func shape(width: Int, height: Int) -> CanvasAspect? {
-        let ratio = Double(width) / Double(max(height, 1))
-        return allCases.first { $0.ratio.map { abs($0 - ratio) < 0.01 } ?? false }
-    }
-
-    /// A size's shape as a ratio: a standard one's name, such as 16:9, or width to height, such as 2.39:1.
-    static func ratioName(width: Int, height: Int) -> String {
-        if let known = shape(width: width, height: height) {
-            return known.rawValue
-        }
-        let ratio = Double(width) / Double(max(height, 1))
-        let rounded = (ratio * 100).rounded() / 100
-        return "\(rounded.formatted(.number.precision(.fractionLength(0...2)))):1"
-    }
-
-    /// The canvas size for a fixed shape, at 1080 on its shorter side.
-    var size: (width: Int, height: Int)? {
-        switch self {
-        case .wide: (1920, 1080)
-        case .tall: (1080, 1920)
-        case .square: (1080, 1080)
-        case .portrait: (1080, 1350)
-        case .standard: (1440, 1080)
-        case .auto, .custom: nil
-        }
-    }
-
-    static let frameRates = [23.976, 24, 25, 29.97, 30, 50, 59.94, 60]
 }
 
 // MARK: - Text

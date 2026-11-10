@@ -7,9 +7,9 @@ struct MediaPanel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
+            // The top row other panels' first labels line up with.
             HStack {
-                Text("Media")
-                    .font(.headline)
+                PanelLabel("Assets")
                 Spacer()
                 Button {
                     store.presentImportPanel()
@@ -21,10 +21,12 @@ struct MediaPanel: View {
                 .help("Import media (⌘I)")
                 .accessibilityLabel("Import media")
             }
+            .frame(height: PanelMetrics.topRowHeight)
             .padding(.horizontal, 14)
-            .padding(.vertical, 12)
+            .padding(.vertical, PanelMetrics.topRowInset)
 
-            if store.project.assets.isEmpty && store.pendingImports.isEmpty {
+            let listed = store.project.assets.filter(\.isListedInMedia)
+            if listed.isEmpty && store.pendingImports.isEmpty {
                 emptyState
             } else {
                 ScrollView {
@@ -32,7 +34,7 @@ struct MediaPanel: View {
                         ForEach(store.pendingImports) { pending in
                             PendingRow(name: pending.name)
                         }
-                        ForEach(store.project.assets) { asset in
+                        ForEach(listed) { asset in
                             AssetRow(asset: asset, store: store)
                         }
                     }
@@ -63,12 +65,9 @@ struct MediaPanel: View {
 
     private var emptyState: some View {
         VStack(spacing: 8) {
-            AppIcon.media.image
-                .font(.system(size: 26))
-                .foregroundStyle(.secondary)
             Text("Import video and audio")
-                .font(.headline)
-            Text("Drag files here or onto the timeline, or choose Import. Each file is copied into the project.")
+                .font(PanelMetrics.emptyTitleFont)
+            Text("Drag files here or onto the timeline, or choose Import.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)

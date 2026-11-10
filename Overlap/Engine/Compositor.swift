@@ -4,7 +4,7 @@ import ImageIO
 import Synchronization
 
 /// Draws a frame from a render plan with Core Image: the background, then every picture layer from the bottom track
-/// up. Used by the compositor during playback and export, and directly by tests.
+/// up, each placed in the plan's frame. Used by the compositor during playback and export, and directly by tests.
 final class FrameRenderer: @unchecked Sendable {
     private struct TitleKey: Hashable {
         var title: Title
@@ -19,20 +19,25 @@ final class FrameRenderer: @unchecked Sendable {
 
     private static let sRGB = CGColorSpace(name: CGColorSpace.sRGB)!
 
+    /// What the canvas shows where nothing covers it and there's no background: a soft dark gray rather than black,
+    /// just under the panels around the preview, in the preview and in exports alike.
+    static let emptyCanvas = CIColor(red: 0x16 / 255, green: 0x16 / 255, blue: 0x18 / 255, alpha: 1,
+                                     colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!) ?? CIColor(red: 0.086, green: 0.086, blue: 0.094)
+
     /// The frame at `time`, `plan.canvas` in size with its origin at zero. `sourceFrame` supplies video frames
     /// by composition track.
-    func image(plan: RenderPlan, at time: Double, placeholder: CIImage? = nil,
-               sourceFrame: (CMPersistentTrackID) -> CIImage?) -> CIImage {
+    func image(plan: RenderPlan, at time: Double, sourceFrame: (CMPersistentTrackID) -> CIImage?) -> CIImage {
         let canvas = CGRect(origin: .zero, size: plan.canvas)
-        let clear = placeholder ?? CIImage(color: .clear).cropped(to: canvas)
+        let clear = CIImage(color: .clear).cropped(to: canvas)
+        let empty = CIImage(color: Self.emptyCanvas).cropped(to: canvas)
 
         // The background: the canvas's, under the background clip playing now on the highest track, if any.
         var background = plan.background.map { fill($0, in: canvas) }
         let backgroundLayers = plan.layers.filter { $0.isBackground && $0.isActive(at: time) }
         if let top = backgroundLayers.map(\.track).max() {
             let onTrack = backgroundLayers.filter { $0.track == top }.sorted { $0.start < $1.start }
-            if let clips = blend(onTrack, at: time, render: { self.picture(of: $0, at: time, in: canvas, sourceFrame: sourceFrame) }) {
-                background = clips.composited(over: background ?? CIImage(color: .black).cropped(to: canvas))
+            if let clips = blend(onTrack, at: time, render: { self.picture(of: $0, at: time, in: canvas, frame: plan.frame, sourceFrame: sourceFrame) }) {
+                background = clips.composited(over: background ?? empty)
             }
         }
 
@@ -41,13 +46,13 @@ final class FrameRenderer: @unchecked Sendable {
         let active = plan.layers.filter { !$0.isBackground && $0.isActive(at: time) && $0.clipID != plan.hiddenClip }
         for track in Set(active.map(\.track)).sorted() {
             let onTrack = active.filter { $0.track == track }.sorted { $0.start < $1.start }
-            if let image = blend(onTrack, at: time, render: { self.picture(of: $0, at: time, in: canvas, sourceFrame: sourceFrame) }) {
+            if let image = blend(onTrack, at: time, render: { self.picture(of: $0, at: time, in: canvas, frame: plan.frame, sourceFrame: sourceFrame) }) {
                 picture = image.composited(over: picture)
             }
         }
 
-        // Without a background, the canvas is black where nothing covers it.
-        return picture.composited(over: background ?? CIImage(color: .black)).cropped(to: canvas)
+        // Without a background, the canvas is its empty gray where nothing covers it.
+        return picture.composited(over: background ?? empty).cropped(to: canvas)
     }
 
     // MARK: Layers
@@ -75,9 +80,14 @@ final class FrameRenderer: @unchecked Sendable {
         }
     }
 
-    /// A clip's picture placed on the canvas: cropped, color-adjusted, fitted, rounded, moved, faded and shadowed.
-    private func picture(of layer: RenderLayer, at time: Double, in canvas: CGRect, sourceFrame: (CMPersistentTrackID) -> CIImage?) -> CIImage? {
+    /// A clip's picture placed on the canvas: cropped, color-adjusted, fitted, rounded, moved, faded and shadowed. The
+    /// frame shrinks pictures and titles alike about the canvas center, and gives pictures its corners and shadow.
+    private func picture(of layer: RenderLayer, at time: Double, in canvas: CGRect, frame: PictureFrame,
+                         sourceFrame: (CMPersistentTrackID) -> CIImage?) -> CIImage? {
         let visual = layer.visual
+        let isTitle = if case .title = layer.source { true } else { false }
+        let corners = isTitle ? 0 : frame.corners
+        let shadow = isTitle ? 0 : frame.shadow
         guard var image = source(of: layer, in: canvas, sourceFrame: sourceFrame) else { return nil }
         if case .fill = layer.source {
             return visual.opacity < 1 ? faded(image, to: visual.opacity) : image
@@ -102,8 +112,8 @@ final class FrameRenderer: @unchecked Sendable {
                            height: size.height * max(0.01, 1 - crop.top - crop.bottom))
             image = image.cropped(to: shown)
         }
-        if visual.corners > 0 {
-            image = masked(image, to: shown, radius: visual.corners * min(shown.width, shown.height))
+        if corners > 0 {
+            image = masked(image, to: shown, radius: corners * min(shown.width, shown.height))
         }
 
         var scale = visual.scale
@@ -120,19 +130,20 @@ final class FrameRenderer: @unchecked Sendable {
             }
         }
 
-        // Center on the origin, scale, rotate clockwise, then move to the canvas center plus the offset. Core Image's
-        // y runs up, so the offset's y and the rotation are flipped.
+        // Center on the origin, scale, rotate clockwise, then move to the canvas center plus the offset, and shrink
+        // into the frame. Core Image's y runs up, so the offset's y and the rotation are flipped.
+        let framed = frame.scale
         let transform = CGAffineTransform(translationX: -size.width / 2, y: -size.height / 2)
-            .concatenating(CGAffineTransform(scaleX: scale, y: scale))
+            .concatenating(CGAffineTransform(scaleX: scale * framed, y: scale * framed))
             .concatenating(CGAffineTransform(rotationAngle: -visual.rotation * .pi / 180))
-            .concatenating(CGAffineTransform(translationX: canvas.midX + visual.x * canvas.width,
-                                             y: canvas.midY - visual.y * canvas.height - rise))
+            .concatenating(CGAffineTransform(translationX: canvas.midX + (visual.x * canvas.width) * framed,
+                                             y: canvas.midY - (visual.y * canvas.height + rise) * framed))
         image = image.transformed(by: transform)
         if opacity < 1 {
             image = faded(image, to: opacity)
         }
-        if visual.shadow > 0 {
-            image = shadowed(image, amount: visual.shadow, canvasHeight: canvas.height)
+        if shadow > 0 {
+            image = shadowed(image, amount: shadow, canvasHeight: canvas.height)
         }
         return image
     }
@@ -237,6 +248,9 @@ final class FrameRenderer: @unchecked Sendable {
                 "inputColor1": ciColor(gradient.to),
             ])?.outputImage ?? CIImage(color: ciColor(gradient.from))
             return image.cropped(to: canvas)
+        case let .mesh(mesh):
+            guard let drawn = MeshRenderer.image(mesh, size: canvas.size) else { return CIImage(color: .black).cropped(to: canvas) }
+            return CIImage(cgImage: drawn).transformed(by: CGAffineTransform(translationX: canvas.minX, y: canvas.minY))
         case let .image(url):
             // A wallpaper fills the canvas, cropped at the edges as needed.
             guard let image = image(at: url, fitting: canvas.size) else { return CIImage(color: .black).cropped(to: canvas) }
@@ -341,13 +355,11 @@ final class Compositor: NSObject, AVVideoCompositing, @unchecked Sendable {
         return context.createCGImage(image, from: image.extent.integral, format: .RGBA8, colorSpace: outputColorSpace)
     }
 
-    /// The preview's still while nothing on the timeline has a picture: the background on its own, as it exports,
-    /// or without one, a dark placeholder marking the canvas.
+    /// The preview's still while nothing on the timeline has a picture: the background on its own, or the empty
+    /// canvas, as it exports.
     static func stage(for plan: RenderPlan) -> CGImage? {
         let canvas = CGRect(origin: .zero, size: plan.canvas)
-        let placeholder = plan.background == nil
-            ? CIImage(color: CIColor(red: 0.075, green: 0.075, blue: 0.085)).cropped(to: canvas) : nil
-        let image = renderer.image(plan: plan, at: 0, placeholder: placeholder) { _ in nil }
+        let image = renderer.image(plan: plan, at: 0) { _ in nil }
         return context.createCGImage(image, from: canvas, format: .RGBA8, colorSpace: outputColorSpace)
     }
 }

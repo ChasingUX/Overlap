@@ -1,186 +1,48 @@
 import AppKit
 import SwiftUI
 
-/// The Canvas tab: the canvas's shape and frame rate, and what shows behind the picture.
+/// The Canvas tab: what shows behind the picture, and how the picture sits on it. The canvas is sized on the
+/// preview, by dragging its edges with ⌘ held, and plays at the project's frame rate, which follows the first video.
 struct CanvasPanel: View {
     let store: ProjectStore
-    /// Set when Custom is chosen from the menu, so the size fields take the keyboard.
-    @State private var editsCustomSize = false
-
-    private var canvas: Canvas { store.project.canvas ?? Project.defaultCanvas }
-    private var aspect: CanvasAspect { store.project.canvasAspect }
 
     var body: some View {
         ClipPanel(title: "Canvas") {
-            PanelGroup(title: "Size") {
-                PanelCard {
-                    PopUpRow(title: "Shape", value: shapeValue, items: { shapeItems })
-                    CanvasSizeRow(canvas: canvas, keepsShape: aspect != .custom, takesFocus: editsCustomSize) {
-                        store.setCanvasSize(width: $0, height: $1)
-                    }
-                    MenuRow(title: "Frame rate", value: Self.rateName(canvas.frameRate)) {
-                        ForEach(CanvasAspect.frameRates, id: \.self) { rate in
-                            Toggle(Self.rateName(rate), isOn: Binding(get: { abs(canvas.frameRate - rate) < 0.01 },
-                                                                      set: { _ in store.setFrameRate(rate) }))
-                        }
-                    }
-                }
-            }
-
             PanelGroup(title: "Background") {
                 BackgroundPicker(store: store, selected: store.project.background,
-                                 onPreview: { fill in store.previewLook { $0.background = fill } },
+                                 onPreview: { fill in store.previewLook { $0.setBackground(fill) } },
                                  onSelect: { store.setBackground($0) })
             }
+
+            // How the pictures sit on it, once there's a background to show around them.
+            if store.project.background != nil {
+                PanelGroup(title: "Frame") {
+                    let frame = store.project.frame ?? PictureFrame()
+                    frameSlider("Padding", frame.padding, range: PictureFrame.paddingRange, default: PictureFrame.standard.padding,
+                                format: { "\(Int(($0 * 100).rounded()))%" }) { $0.padding = $1 }
+                    frameSlider("Shadow", frame.shadow, range: 0...100, default: PictureFrame.standard.shadow,
+                                format: { "\(Int($0.rounded()))" }) { $0.shadow = $1 }
+                    frameSlider("Corners", frame.corners, range: 0...0.5, default: PictureFrame.standard.corners,
+                                format: { "\(Int(($0 / 0.5 * 100).rounded()))%" }) { $0.corners = $1 }
+                }
+            }
         }
     }
 
-    /// Auto says what it's following; the rest go by name, since the menu and the Pixels row give the numbers.
-    private var shapeValue: String {
-        switch aspect {
-        case .auto: "Auto · \(CanvasAspect.ratioName(width: canvas.width, height: canvas.height))"
-        default: aspect.title
-        }
-    }
-
-    private var shapeItems: [PopUpRow.Item] {
-        // What Auto would give: the first video's shape, or widescreen before there is one.
-        let follows = store.project.firstVideoCanvas ?? Canvas(width: 1920, height: 1080, frameRate: canvas.frameRate)
-        var items = [PopUpRow.Item(title: CanvasAspect.auto.title,
-                                   detail: CanvasAspect.ratioName(width: follows.width, height: follows.height),
-                                   subtitle: "Matches the first video",
-                                   image: Self.shapeImage(width: follows.width, height: follows.height, dashed: true),
-                                   isChosen: aspect == .auto,
-                                   action: { choose(.auto) })]
-        for (index, shape) in CanvasAspect.allCases.filter({ $0.size != nil }).enumerated() {
-            let size = shape.size!
-            items.append(PopUpRow.Item(title: shape.title, detail: shape.rawValue,
-                                       image: Self.shapeImage(width: size.width, height: size.height, dashed: false),
-                                       isChosen: aspect == shape, startsGroup: index == 0, action: { choose(shape) }))
-        }
-        // A pencil, for typing a size of your own, so its title lines up with the shapes'.
-        let pencil = NSImage(systemSymbolName: "pencil", accessibilityDescription: nil)?
-            .withSymbolConfiguration(.init(pointSize: 12, weight: .regular))
-        items.append(PopUpRow.Item(title: "Custom…", detail: aspect == .custom ? "\(canvas.width) × \(canvas.height)" : nil,
-                                   image: pencil, isChosen: aspect == .custom, startsGroup: true, action: {
-            editsCustomSize = true
-            if aspect != .custom { store.setCanvasAspect(.custom) }
-        }))
-        return items
-    }
-
-    private func choose(_ shape: CanvasAspect) {
-        editsCustomSize = false
-        if shape != aspect { store.setCanvasAspect(shape) }
-    }
-
-    static func rateName(_ rate: Double) -> String {
-        "\(rate.formatted(.number.precision(.fractionLength(0...3)))) fps"
-    }
-
-    /// A shape's outline, small enough for a menu: the size's proportions in a box the height of a line of text,
-    /// dashed for Auto, which follows the first video. A template, so it takes the menu's colors.
-    static func shapeImage(width: Int, height: Int, dashed: Bool) -> NSImage {
-        let ratio = Double(width) / Double(max(height, 1))
-        let room = CGSize(width: 15, height: 11)
-        let size = ratio > room.width / room.height
-            ? CGSize(width: room.width, height: room.width / ratio)
-            : CGSize(width: room.height * ratio, height: room.height)
-        let image = NSImage(size: NSSize(width: 18, height: 14), flipped: false) { bounds in
-            let shape = CGRect(x: bounds.midX - size.width / 2, y: bounds.midY - size.height / 2, width: size.width, height: size.height)
-            let path = NSBezierPath(roundedRect: shape, xRadius: 1.5, yRadius: 1.5)
-            path.lineWidth = 1.3
-            if dashed { path.setLineDash([2, 1.6], count: 2, phase: 0) }
-            NSColor.black.setStroke()
-            path.stroke()
-            return true
-        }
-        image.isTemplate = true
-        return image
+    private func frameSlider(_ title: String, _ value: Double, range: ClosedRange<Double>, default defaultValue: Double,
+                             format: @escaping (Double) -> String,
+                             set: @escaping (inout PictureFrame, Double) -> Void) -> some View {
+        BoxSlider(title: title, value: value, range: range, format: format, defaultValue: defaultValue,
+                  onChange: { new in store.previewFrame { set(&$0, new) } },
+                  onCommit: { new in store.setFrame("Change \(title)") { set(&$0, new) } })
     }
 }
 
-/// Width and height for the canvas, plain numbers on the card until clicked, then typed over and taken on Return
-/// or on leaving the field. A fixed shape, or Auto, keeps its proportions: change one side and the other follows.
-/// Custom takes both as typed. Choosing Custom from the menu puts the cursor in the width.
-private struct CanvasSizeRow: View {
-    let canvas: Canvas
-    let keepsShape: Bool
-    var takesFocus = false
-    let onCommit: (Int, Int) -> Void
-
-    @State private var width = ""
-    @State private var height = ""
-    @FocusState private var focus: Side?
-    @State private var hovered: Side?
-
-    private enum Side { case width, height }
-
-    var body: some View {
-        ControlRow(title: "Pixels") {
-            HStack(spacing: 2) {
-                field($width, .width)
-                Text("×")
-                    .foregroundStyle(.secondary)
-                    .fixedSize()
-                field($height, .height)
-            }
-        }
-        .onAppear {
-            load()
-            if takesFocus { focus = .width }
-        }
-        .onChange(of: canvas) { load() }
-        .onChange(of: takesFocus) { _, takes in
-            if takes { focus = .width }
-        }
-        .onChange(of: focus) { left, _ in
-            if let left { commit(left) }
-        }
-    }
-
-    private func field(_ text: Binding<String>, _ side: Side) -> some View {
-        TextField("", text: text)
-            .textFieldStyle(.plain)
-            .multilineTextAlignment(.center)
-            .monospacedDigit()
-            .frame(width: 42, height: valueHeight(inCard: true))
-            .background {
-                // A field shows once it's pointed at, and stays lit while you type in it.
-                RoundedRectangle(cornerRadius: PanelMetrics.pillRadius, style: .continuous)
-                    .fill(Color(nsColor: focus == side ? Theme.controlChosen : Theme.controlFill))
-                    .opacity(focus == side || hovered == side ? 1 : 0)
-            }
-            .focused($focus, equals: side)
-            .onHover { isOver in
-                if isOver { hovered = side } else if hovered == side { hovered = nil }
-            }
-            .onSubmit { commit(side) }
-            .accessibilityLabel(side == .width ? "Width" : "Height")
-    }
-
-    private func load() {
-        width = String(canvas.width)
-        height = String(canvas.height)
-    }
-
-    private func commit(_ side: Side) {
-        guard var w = Int(width), var h = Int(height), w > 0, h > 0 else { return load() }
-        if keepsShape {
-            let ratio = Double(canvas.width) / Double(max(canvas.height, 1))
-            switch side {
-            case .width: h = Int((Double(w) / ratio).rounded())
-            case .height: w = Int((Double(h) * ratio).rounded())
-            }
-        }
-        guard w != canvas.width || h != canvas.height else { return load() }
-        onCommit(w, h)
-    }
-}
-
-/// Background swatches in three sections. Colors: None, the built-in colors, then your own, with + for a color of
-/// your own and an eyedropper for one from the screen. Gradients. Wallpapers, with + to add one. Colors are round;
-/// gradients and wallpapers are tiles the canvas's shape. Swatches drag onto the timeline as background clips.
+/// Background choices, top to bottom: None, which leaves the pictures filling the canvas; gradients and wallpapers
+/// as square tiles, a row or two of each with Show More for the rest; then plain colors, the built-in ones, a
+/// spectrum that opens the color panel, with its eyedropper, for one of your own.
+/// Wallpapers are your own images and the Mac's aerials this Mac has downloaded. Any of them drags onto the timeline
+/// as a background clip.
 struct BackgroundPicker: View {
     let store: ProjectStore
     let selected: BackgroundFill?
@@ -189,102 +51,138 @@ struct BackgroundPicker: View {
     let onPreview: (BackgroundFill) -> Void
     let onSelect: (BackgroundFill?) -> Void
 
-    @State private var libraryThumbnails: [URL: CGImage] = [:]
+    @State private var thumbnails: [URL: CGImage] = [:]
+    @State private var aerials: [SystemWallpapers.Aerial] = []
     @State private var isPickingColor = false
+    @State private var showsAllGradients = false
+    @State private var showsAllWallpapers = false
 
-    /// None and the six built-in colors make one full row; your colors start the next.
-    private static let colorColumns = Array(repeating: GridItem(.flexible(), spacing: 0), count: 7)
-    private static let tileColumns = Array(repeating: GridItem(.flexible(), spacing: 8), count: 4)
+    private static let tileColumns = Array(repeating: GridItem(.flexible(), spacing: SwatchMetrics.tileGap), count: 5)
+    private static let colorColumns = Array(repeating: GridItem(.flexible(), spacing: 0), count: 9)
+    /// Two rows of gradients, and of wallpapers with the tile that adds one.
+    private static let shownGradients = 10
+    private static let shownWallpapers = 9
 
-    private var projectWallpapers: [Asset] {
-        store.project.assets.filter { $0.kind == .image }
-    }
-
-    /// Library wallpapers this project hasn't brought in yet.
-    private var libraryWallpapers: [URL] {
-        let names = Set(projectWallpapers.map(\.displayName))
-        return WallpaperLibrary.wallpapers().filter { !names.contains($0.lastPathComponent) }
-    }
-
-    /// The canvas's shape, kept between square and twice as wide as tall so tiles stay a sensible size.
-    private var tileAspect: CGFloat {
-        let canvas = store.project.canvas ?? Project.defaultCanvas
-        return (CGFloat(canvas.width) / CGFloat(max(canvas.height, 1))).clamped(to: 1...2)
+    /// The project's own images, then wallpapers you've added and the Mac's aerials, each once. One the project has
+    /// brought in keeps its place, showing the project's copy.
+    private var wallpapers: [WallpaperChoice] {
+        let images = store.project.assets.filter { $0.kind == .image }
+        let files = WallpaperLibrary.wallpapers()
+        let names = Set(files.map(\.lastPathComponent)).union(aerials.flatMap(\.fileNames))
+        let brought = { (names: Set<String>) in images.first { names.contains($0.displayName) }.map { WallpaperChoice.asset($0) } }
+        return images.filter { !names.contains($0.displayName) }.map { WallpaperChoice.asset($0) }
+            + files.map { brought([$0.lastPathComponent]) ?? .file($0) }
+            + aerials.map { brought($0.fileNames) ?? .aerial($0) }
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            caption("Colors")
-            LazyVGrid(columns: Self.colorColumns, spacing: 10) {
-                if allowsNone {
-                    Swatch(isRound: true, isSelected: selected == nil, name: "None", isTool: true, action: { onSelect(nil) }) {
-                        Slash().stroke(Color.secondary, style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
-                    }
-                    .frame(width: SwatchMetrics.circle, height: SwatchMetrics.circle)
-                }
-                ForEach(BackgroundFill.colors, id: \.self, content: colorSwatch)
+        VStack(alignment: .leading, spacing: 8) {
+            if allowsNone {
+                NoneButton(isSelected: selected == nil) { choose(nil) }
+                    .padding(.bottom, 8)
             }
-            LazyVGrid(columns: Self.colorColumns, spacing: 10) {
-                ForEach(WallpaperLibrary.customColors.map { BackgroundFill.color($0) }, id: \.self, content: colorSwatch)
-                ColorWellSwatch(color: selectedColor, onChange: { onPreview(.color($0)) },
-                                onActiveChange: { isPickingColor = $0 }) { color, earlier in
-                    onSelect(.color(WallpaperLibrary.remember(color, replacing: earlier)))
-                }
-                .frame(width: SwatchMetrics.circle, height: SwatchMetrics.circle)
-                .overlay { SwatchRing(isRound: true, isSelected: isPickingColor, isHovered: false) }
-                .accessibilityLabel("Custom color")
-                .help("Choose a color of your own")
-                EyedropperSwatch { color in
-                    onSelect(.color(WallpaperLibrary.remember(color)))
-                }
-                .frame(width: SwatchMetrics.circle, height: SwatchMetrics.circle)
-            }
-            .padding(.top, 4)
 
-            caption("Gradients")
-                .padding(.top, 8)
-            LazyVGrid(columns: Self.tileColumns, spacing: 8) {
-                ForEach(BackgroundFill.gradients, id: \.self) { fill in
-                    tile(name: "Gradient", isSelected: selected == fill, action: { onSelect(fill) }) { FillFace(fill: fill) }
+            let gradients = BackgroundFill.gradients
+            heading("Gradients", showsAll: gradients.count > Self.shownGradients ? $showsAllGradients : nil)
+            LazyVGrid(columns: Self.tileColumns, spacing: SwatchMetrics.tileGap) {
+                ForEach(showsAllGradients ? gradients : Array(gradients.prefix(Self.shownGradients)), id: \.self) { fill in
+                    tile(name: "Gradient", isSelected: selected == fill, action: { choose(fill) }) { FillFace(fill: fill) }
                         .onDrag { NSItemProvider(object: TimelineDrag.payload(for: fill) as NSString) }
                 }
             }
 
-            caption("Wallpapers")
-                .padding(.top, 8)
-            LazyVGrid(columns: Self.tileColumns, spacing: 8) {
-                ForEach(projectWallpapers) { asset in
-                    let fill = BackgroundFill.wallpaper(asset.id)
-                    tile(name: "Wallpaper", isSelected: selected == fill, action: { onSelect(fill) }) {
-                        FillFace(fill: fill, thumbnail: store.thumbnails[asset.id])
-                    }
-                    .onDrag { NSItemProvider(object: TimelineDrag.payload(for: fill) as NSString) }
+            let wallpapers = wallpapers
+            heading("Wallpapers", showsAll: wallpapers.count > Self.shownWallpapers ? $showsAllWallpapers : nil)
+                .padding(.top, 10)
+            LazyVGrid(columns: Self.tileColumns, spacing: SwatchMetrics.tileGap) {
+                ForEach(showsAllWallpapers ? wallpapers : Array(wallpapers.prefix(Self.shownWallpapers))) { choice in
+                    wallpaperTile(choice)
                 }
-                ForEach(libraryWallpapers, id: \.self) { url in
-                    tile(name: "Wallpaper", isSelected: false, action: { store.useWallpaper(url) { onSelect($0) } }) {
-                        FillFace(fill: nil, thumbnail: libraryThumbnails[url])
-                    }
-                    .task { libraryThumbnails[url] = await MediaAnalysis.imageThumbnail(for: url) }
+                AddWallpaperTile { store.presentWallpaperPanel { choose($0) } }
+                    .aspectRatio(1, contentMode: .fit)
+            }
+            if aerials.count < 5 {
+                Text("Aerials you download in System Settings › Wallpaper show up here.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            caption("Plain color")
+                .padding(.top, 10)
+            LazyVGrid(columns: Self.colorColumns, spacing: 8) {
+                ForEach(BackgroundFill.colors, id: \.self, content: colorSwatch)
+                // Chosen while the background is a color of your own. The color panel picks for it until anything
+                // else is chosen, so the panel, left open, can't change the background after that.
+                ColorWellSwatch(color: selectedColor, showsSpectrum: true, isPicking: isPickingColor, onChange: { onPreview(.color($0)) },
+                                onActiveChange: { isPickingColor = $0 }) { color, _ in
+                    onSelect(.color(color))
                 }
-                AddWallpaperTile { store.presentWallpaperPanel { onSelect($0) } }
-                    .aspectRatio(tileAspect, contentMode: .fit)
+                .frame(width: SwatchMetrics.circle, height: SwatchMetrics.circle)
+                .overlay { SwatchRing(isRound: true, isSelected: isOwnColor, isHovered: false) }
+                .accessibilityLabel("Custom color")
+                .help("Choose a color of your own")
             }
         }
-        .padding(10)
-        .background(ControlBox())
+        .task { aerials = await SystemWallpapers.downloaded() }
+    }
+
+    private func heading(_ text: String, showsAll: Binding<Bool>?) -> some View {
+        HStack {
+            caption(text)
+            Spacer()
+            if let showsAll {
+                Button {
+                    withAnimation(.easeOut(duration: 0.2)) { showsAll.wrappedValue.toggle() }
+                } label: {
+                    HStack(spacing: 3) {
+                        Text(showsAll.wrappedValue ? "Show Less" : "Show More")
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 8, weight: .semibold))
+                            .rotationEffect(.degrees(showsAll.wrappedValue ? 180 : 0))
+                    }
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
     }
 
     private func caption(_ text: String) -> some View {
-        Text(text)
-            .font(.system(size: 11))
-            .foregroundStyle(.tertiary)
-            .padding(.leading, 2)
+        PanelLabel(text)
     }
 
-    /// A round swatch for a color. It counts as chosen when the background is within a hair of it, as a color
-    /// kept before near-copies were skipped can be.
+    @ViewBuilder
+    private func wallpaperTile(_ choice: WallpaperChoice) -> some View {
+        switch choice {
+        case let .asset(asset):
+            let fill = BackgroundFill.wallpaper(asset.id)
+            tile(name: (asset.displayName as NSString).deletingPathExtension, isSelected: selected == fill, action: { choose(fill) }) {
+                FillFace(fill: fill, thumbnail: store.thumbnails[asset.id])
+            }
+            .onDrag { NSItemProvider(object: TimelineDrag.payload(for: fill) as NSString) }
+        case let .file(url):
+            let name = url.deletingPathExtension().lastPathComponent
+            tile(name: name, isSelected: false, action: { store.useWallpaper(url) { choose($0) } }) {
+                FillFace(fill: nil, thumbnail: thumbnails[url])
+            }
+            .help(name)
+            .task { thumbnails[url] = await MediaAnalysis.imageThumbnail(for: url) }
+        case let .aerial(aerial):
+            tile(name: aerial.name, isSelected: false, action: { store.useAerial(aerial) { choose($0) } }) {
+                FillFace(fill: nil, thumbnail: thumbnails[aerial.thumbnail])
+            }
+            .help(aerial.name)
+            .task { thumbnails[aerial.thumbnail] = await MediaAnalysis.imageThumbnail(for: aerial.thumbnail) }
+        }
+    }
+
+    /// A round swatch for a color. It counts as chosen when the background is within a hair of it, as one picked in
+    /// the color panel or with its eyedropper can be.
     private func colorSwatch(_ fill: BackgroundFill) -> some View {
-        Swatch(isRound: true, isSelected: isChosen(fill), name: "Color", action: { onSelect(fill) }) { FillFace(fill: fill) }
+        Swatch(isRound: true, isSelected: isChosen(fill), name: "Color", action: { choose(fill) }) { FillFace(fill: fill) }
             .frame(width: SwatchMetrics.circle, height: SwatchMetrics.circle)
             .onDrag { NSItemProvider(object: TimelineDrag.payload(for: fill) as NSString) }
     }
@@ -292,7 +190,13 @@ struct BackgroundPicker: View {
     private func tile<Face: View>(name: String, isSelected: Bool, action: @escaping () -> Void,
                                   @ViewBuilder face: () -> Face) -> some View {
         Swatch(isRound: false, isSelected: isSelected, name: name, action: action, face: face)
-            .aspectRatio(tileAspect, contentMode: .fit)
+            .aspectRatio(1, contentMode: .fit)
+    }
+
+    /// Chooses a background other than a color of your own, which ends the color panel's picking.
+    private func choose(_ fill: BackgroundFill?) {
+        isPickingColor = false
+        onSelect(fill)
     }
 
     private func isChosen(_ fill: BackgroundFill) -> Bool {
@@ -305,18 +209,74 @@ struct BackgroundPicker: View {
     private var selectedColor: RGBA {
         if case let .color(color)? = selected { color } else { .white }
     }
+
+    /// Whether the background is a color that isn't one of the built-in ones.
+    private var isOwnColor: Bool {
+        guard case .color? = selected else { return false }
+        return !BackgroundFill.colors.contains(where: isChosen)
+    }
+}
+
+/// A wallpaper tile: an image already in the project, or one that comes into it when chosen, from the wallpapers
+/// you've added or a still of one of the Mac's aerials.
+private enum WallpaperChoice: Identifiable {
+    case asset(Asset)
+    case file(URL)
+    case aerial(SystemWallpapers.Aerial)
+
+    var id: String {
+        switch self {
+        case let .asset(asset): asset.id.uuidString
+        case let .file(url): url.path
+        case let .aerial(aerial): aerial.id
+        }
+    }
+}
+
+/// None, as wide as the panel: the pictures fill the canvas, with nothing behind them.
+private struct NoneButton: View {
+    let isSelected: Bool
+    let action: () -> Void
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            Text("None")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(isSelected ? .primary : .secondary)
+                .frame(maxWidth: .infinity, minHeight: PanelMetrics.boxHeight)
+                .background {
+                    RoundedRectangle(cornerRadius: PanelMetrics.boxRadius, style: .continuous)
+                        .fill(Color(nsColor: isHovered && !isSelected ? Theme.controlFill : Theme.controlBox))
+                }
+                .overlay {
+                    if isSelected {
+                        RoundedRectangle(cornerRadius: PanelMetrics.boxRadius + SwatchMetrics.ringOutset, style: .continuous)
+                            .strokeBorder(Color.accentColor, lineWidth: SwatchMetrics.ringWidth)
+                            .padding(-SwatchMetrics.ringOutset)
+                    }
+                }
+                .contentShape(RoundedRectangle(cornerRadius: PanelMetrics.boxRadius, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+        .accessibilityLabel("No background")
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
 }
 
 /// Swatch sizes, and how far outside a swatch the ring marking it sits.
 enum SwatchMetrics {
-    static let circle: CGFloat = 24
+    static let circle: CGFloat = 20
     /// A color swatch at the end of a row, a little smaller than the picker's.
     static let rowCircle: CGFloat = 20
-    static let tileRadius: CGFloat = 6
+    static let tileRadius: CGFloat = 12
+    /// Between gradient and wallpaper tiles, across and down.
+    static let tileGap: CGFloat = 12
     static let ringWidth: CGFloat = 2
     /// The ring's outer edge: a two-point gap, then the ring.
     static let ringOutset: CGFloat = 4
-    /// How much black None, + and the eyedropper are filled with, so they sit darker than the box, unlike a color.
+    /// How much black None and + are filled with, so they sit darker than the box, unlike a color.
     static let toolShade = 0.3
 }
 
@@ -343,7 +303,7 @@ struct SwatchRing: View {
 }
 
 /// A clickable swatch: its face on a faint fill, a hairline so dark colors stand out from the box, and the ring.
-/// A tool (None, the eyedropper) sits on the dark tool shade instead, matching the + drawn by its color well.
+/// A tool, such as None, sits on the dark tool shade instead, matching the + drawn by its color well.
 struct Swatch<Face: View>: View {
     let isRound: Bool
     let isSelected: Bool
@@ -388,6 +348,12 @@ struct FillFace: View {
                 LinearGradient(colors: [Color(rgba: gradient.from), Color(rgba: gradient.to)],
                                startPoint: UnitPoint(x: 0.5 - cos(angle) / 2, y: 0.5 - sin(angle) / 2),
                                endPoint: UnitPoint(x: 0.5 + cos(angle) / 2, y: 0.5 + sin(angle) / 2))
+            case let .mesh(mesh)?:
+                // Drawn by the renderer the canvas uses, so the tile looks as the background will.
+                // Drawn at twice a tile's size, so grain softens as it does on a canvas seen whole.
+                if let image = MeshRenderer.image(mesh, size: CGSize(width: 192, height: 192)) {
+                    Image(decorative: image, scale: 1).resizable()
+                }
             case .wallpaper?, nil:
                 Color.clear
             }

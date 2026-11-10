@@ -247,6 +247,7 @@ enum CompositionBuilder {
             let box = RenderPlanBox(RenderPlan(
                 canvas: renderSize,
                 background: project.background.flatMap { resolve($0, urls: urls) },
+                frame: project.frame ?? PictureFrame(),
                 layers: layers,
                 hiddenClip: nil
             ))
@@ -256,7 +257,7 @@ enum CompositionBuilder {
                 colorTransferFunction: AVVideoTransferFunction_ITU_R_709_2,
                 colorYCbCrMatrix: AVVideoYCbCrMatrix_ITU_R_709_2,
                 customVideoCompositorClass: Compositor.self,
-                frameDuration: frameDuration(for: canvas.frameRate),
+                frameDuration: frameDuration(for: project.frameRate),
                 instructions: instructions(edges: edges, until: Time(composition.duration), layers: layers, baseTrack: base.trackID, plan: box),
                 renderSize: renderSize
             )
@@ -300,6 +301,7 @@ enum CompositionBuilder {
         switch fill {
         case let .color(color): .color(color)
         case let .gradient(gradient): .gradient(gradient)
+        case let .mesh(mesh): .mesh(mesh)
         case let .wallpaper(id): urls[id].map { .image($0) }
         }
     }

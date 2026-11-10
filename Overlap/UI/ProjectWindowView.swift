@@ -70,7 +70,9 @@ struct ProjectWindowView: View {
 
     private var sideColumn: some View {
         HStack(spacing: 0) {
+            // Above the panel, so the rail's tooltips float over it.
             RailView(store: store)
+                .zIndex(1)
             Hairline(vertical: true)
             if store.isPanelVisible {
                 PanelView(store: store)

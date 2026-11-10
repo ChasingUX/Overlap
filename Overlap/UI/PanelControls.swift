@@ -13,6 +13,17 @@ enum PanelMetrics {
     static let cardRowHeight: CGFloat = 36
     /// How far a plain value's hover fill reaches past its text.
     static let valueInset: CGFloat = 6
+    /// A panel's labels: 11-point text, 13 points tall.
+    static let labelSize: CGFloat = 11
+    static let labelHeight: CGFloat = 13
+    /// A panel's top row: as tall as its 24-point buttons, such as Media's Import, 12 points down.
+    static let topRowInset: CGFloat = 12
+    static let topRowHeight: CGFloat = 24
+    /// Where a panel's first label starts: centered in the top row, as Media's is beside Import, so every panel's
+    /// top label sits at the same height.
+    static let firstLabelTop = topRowInset + (topRowHeight - labelHeight) / 2
+    /// An empty tab's title: the headline's size, a weight lighter.
+    static let emptyTitleFont = Font.system(size: 13, weight: .semibold)
 }
 
 extension EnvironmentValues {
@@ -27,12 +38,26 @@ struct PanelGroup<Content: View>: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(title)
-                .font(.system(size: 13, weight: .semibold))
+            PanelLabel(title)
             VStack(spacing: 6) {
                 content
             }
         }
+    }
+}
+
+/// A panel's labels, for groups and the parts within them: small and gray, never white, so the controls lead.
+struct PanelLabel: View {
+    let text: String
+
+    init(_ text: String) {
+        self.text = text
+    }
+
+    var body: some View {
+        Text(text)
+            .font(.system(size: PanelMetrics.labelSize))
+            .foregroundStyle(.secondary)
     }
 }
 
@@ -230,139 +255,6 @@ struct MenuRow<Items: View>: View {
     }
 }
 
-/// A label and a pop-up menu drawn by AppKit itself, for menus whose items need a picture and a detail beside the
-/// title, which SwiftUI's menus can't show. It opens over the control with the chosen item lined up on it, as a
-/// pop-up button's does, and keeps everything a native menu has: arrow keys, typing to jump, VoiceOver.
-struct PopUpRow: View {
-    struct Item {
-        var title: String
-        /// Shown at the item's right edge.
-        var detail: String?
-        /// Shown on a second line under the title.
-        var subtitle: String?
-        var image: NSImage?
-        var isChosen = false
-        /// Starts a new group, with a line above it.
-        var startsGroup = false
-        var action: () -> Void
-    }
-
-    let title: String
-    let value: String
-    var icon: NSImage?
-    let items: () -> [Item]
-
-    @State private var anchor = PopUpAnchor()
-    @Environment(\.isInPanelCard) private var isInCard
-    @State private var isHovered = false
-
-    var body: some View {
-        ControlRow(title: title) {
-            Button {
-                anchor.popUp(items())
-            } label: {
-                HStack(spacing: 6) {
-                    if let icon {
-                        Image(nsImage: icon)
-                            .renderingMode(.template)
-                            .foregroundStyle(.secondary)
-                    }
-                    Text(value)
-                        .lineLimit(1)
-                    Image(systemName: "chevron.up.chevron.down")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                }
-                .padding(.horizontal, isInCard ? PanelMetrics.valueInset : 10)
-                .frame(height: valueHeight(inCard: isInCard))
-                .background(ValueBackground(isPlain: isInCard, isHighlighted: isHovered))
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .background(PopUpAnchorView(anchor: anchor))
-            .fixedSize()
-            .onHover { isHovered = $0 }
-            .accessibilityLabel(title)
-            .accessibilityValue(value)
-        }
-    }
-}
-
-/// Where a `PopUpRow`'s menu opens from: an empty AppKit view behind its pill.
-@MainActor
-final class PopUpAnchor {
-    fileprivate weak var view: NSView?
-
-    #if DEBUG
-    /// Told about each menu as it opens, for debug checks that look at it.
-    static var debugOnOpen: ((NSMenu) -> Void)?
-    #endif
-
-    func popUp(_ items: [PopUpRow.Item]) {
-        guard let view else { return }
-        let menu = NSMenu()
-        menu.autoenablesItems = false
-        // The menu holds its items only weakly to their targets, so the actions are kept here while it's open.
-        var actions: [MenuAction] = []
-        var chosen: NSMenuItem?
-        for item in items {
-            if item.startsGroup, !menu.items.isEmpty { menu.addItem(.separator()) }
-            let action = MenuAction(item.action)
-            actions.append(action)
-            let menuItem = NSMenuItem(title: item.title, action: #selector(MenuAction.choose), keyEquivalent: "")
-            menuItem.target = action
-            menuItem.image = item.image
-            // macOS 27 hides menu pictures unless an item asks for its own; here the picture is the point.
-            menuItem.preferredImageVisibility = .visible
-            menuItem.subtitle = item.subtitle
-            if let detail = item.detail { menuItem.badge = NSMenuItemBadge(string: detail) }
-            menuItem.state = item.isChosen ? NSControl.StateValue.on : .off
-            if item.isChosen { chosen = menuItem }
-            menu.addItem(menuItem)
-        }
-        #if DEBUG
-        if let debugOnOpen = Self.debugOnOpen {
-            // The menu runs its own event loop while open; a timer in the common modes still fires inside it.
-            nonisolated(unsafe) let open = (debugOnOpen, menu)
-            let timer = Timer(timeInterval: 0.4, repeats: false) { _ in MainActor.assumeIsolated { open.0(open.1) } }
-            RunLoop.main.add(timer, forMode: .common)
-        }
-        #endif
-        // The chosen item opens right over the pill, the way a pop-up button's does.
-        menu.popUp(positioning: chosen, at: NSPoint(x: 0, y: view.bounds.height - 1), in: view)
-        withExtendedLifetime(actions) {}
-    }
-}
-
-private final class MenuAction: NSObject {
-    private let run: () -> Void
-
-    init(_ run: @escaping () -> Void) {
-        self.run = run
-    }
-
-    @objc func choose() {
-        run()
-    }
-}
-
-/// The empty view a `PopUpRow`'s menu opens from.
-final class PopUpAnchorNSView: NSView {}
-
-private struct PopUpAnchorView: NSViewRepresentable {
-    let anchor: PopUpAnchor
-
-    func makeNSView(context: Context) -> NSView {
-        let view = PopUpAnchorNSView()
-        anchor.view = view
-        return view
-    }
-
-    func updateNSView(_ view: NSView, context: Context) {
-        anchor.view = view
-    }
-}
-
 /// A label and a color well. The color panel sends changes as it's dragged; they show at once through
 /// `onChange`, and `onCommit` follows once the color has settled, as one undo step.
 struct ColorRow: View {
@@ -441,6 +333,11 @@ struct ColorWellSwatch: NSViewRepresentable {
     let color: RGBA
     /// Shows the color itself rather than a +.
     var showsColor = false
+    /// Shows every hue around the circle rather than a +.
+    var showsSpectrum = false
+    /// Set false to end the color panel's picking for this swatch, as when something else is chosen. Nil leaves it
+    /// to the panel.
+    var isPicking: Bool?
     let onChange: (RGBA) -> Void
     /// Whether the color panel is picking for this swatch, so it can show the chosen ring meanwhile.
     var onActiveChange: (Bool) -> Void = { _ in }
@@ -458,41 +355,25 @@ struct ColorWellSwatch: NSViewRepresentable {
 
     func updateNSView(_ well: SwatchColorWell, context: Context) {
         well.showsColor = showsColor
+        well.showsSpectrum = showsSpectrum
         well.onChange = onChange
         well.onCommit = onCommit
         well.onActiveChange = onActiveChange
+        if isPicking == false, well.isActive {
+            well.stopPicking()
+        }
         if !well.isActive {
             well.color = NSColor(srgbRed: color.red, green: color.green, blue: color.blue, alpha: 1)
         }
     }
 }
 
-/// A swatch with an eyedropper, for a color from anywhere on screen: it opens the system's magnifier, and a click
-/// picks the color under it. Escape changes nothing.
-struct EyedropperSwatch: View {
-    let onPick: (RGBA) -> Void
-
-    private func pick() {
-        NSColorSampler().show { picked in
-            guard let srgb = picked?.usingColorSpace(.sRGB) else { return }
-            let color = RGBA(red: srgb.redComponent, green: srgb.greenComponent, blue: srgb.blueComponent)
-            MainActor.assumeIsolated { onPick(color) }
-        }
-    }
-
-    var body: some View {
-        Swatch(isRound: true, isSelected: false, name: "Pick a color from the screen", isTool: true, action: pick) {
-            Image(systemName: "eyedropper")
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(.secondary)
-        }
-        .help("Pick a color from the screen")
-    }
-}
-
 final class SwatchColorWell: NSColorWell {
     var showsColor = false {
         didSet { if showsColor != oldValue { needsDisplay = true } }
+    }
+    var showsSpectrum = false {
+        didSet { if showsSpectrum != oldValue { needsDisplay = true } }
     }
     var onChange: ((RGBA) -> Void)?
     var onCommit: ((RGBA, RGBA?) -> Void)?
@@ -540,6 +421,12 @@ final class SwatchColorWell: NSColorWell {
         onActiveChange?(false)
     }
 
+    /// Ends picking for something chosen elsewhere, dropping a color still settling so it can't replace that.
+    func stopPicking() {
+        settle?.cancel()
+        deactivate()
+    }
+
     @objc private func colorDidChange() {
         guard let srgb = color.usingColorSpace(.sRGB) else { return }
         let picked = RGBA(red: srgb.redComponent, green: srgb.greenComponent, blue: srgb.blueComponent)
@@ -553,10 +440,13 @@ final class SwatchColorWell: NSColorWell {
         }
     }
 
-    /// Drawn as a swatch rather than a well: its color, or a dark circle with a +, like the eyedropper beside it.
+    /// Drawn as a swatch rather than a well: its color, every hue, or a dark circle with a +, like None beside it.
     /// The ring marking it while the panel picks for it is drawn around it by the view it sits in.
     override func draw(_ dirtyRect: NSRect) {
         let circle = NSBezierPath(ovalIn: bounds.insetBy(dx: 0.5, dy: 0.5))
+        if showsSpectrum {
+            return drawSpectrum(in: circle)
+        }
         (showsColor ? color : NSColor.black.withAlphaComponent(SwatchMetrics.toolShade)).setFill()
         circle.fill()
         NSColor.white.withAlphaComponent(0.14).setStroke()
@@ -570,6 +460,34 @@ final class SwatchColorWell: NSColorWell {
             symbol.draw(in: NSRect(x: bounds.midX - symbol.size.width / 2, y: bounds.midY - symbol.size.height / 2,
                                    width: symbol.size.width, height: symbol.size.height))
         }
+    }
+
+    /// Every hue around the circle, softening to white at the middle.
+    private func drawSpectrum(in circle: NSBezierPath) {
+        guard let context = NSGraphicsContext.current?.cgContext else { return }
+        context.saveGState()
+        circle.addClip()
+        let center = CGPoint(x: bounds.midX, y: bounds.midY)
+        let radius = bounds.width
+        let steps = 90
+        for step in 0..<steps {
+            let from = CGFloat(step) / CGFloat(steps) * 2 * .pi
+            let to = CGFloat(step + 1) / CGFloat(steps) * 2 * .pi + 0.01
+            context.move(to: center)
+            context.addArc(center: center, radius: radius, startAngle: from, endAngle: to, clockwise: false)
+            context.closePath()
+            context.setFillColor(NSColor(hue: CGFloat(step) / CGFloat(steps), saturation: 0.75, brightness: 1, alpha: 1).cgColor)
+            context.fillPath()
+        }
+        let white = [NSColor.white.withAlphaComponent(0.85).cgColor, NSColor.white.withAlphaComponent(0).cgColor] as CFArray
+        if let soft = CGGradient(colorsSpace: CGColorSpace(name: CGColorSpace.sRGB), colors: white, locations: [0, 1]) {
+            context.drawRadialGradient(soft, startCenter: center, startRadius: 0, endCenter: center,
+                                       endRadius: bounds.width * 0.42, options: [])
+        }
+        context.restoreGState()
+        NSColor.white.withAlphaComponent(0.14).setStroke()
+        circle.lineWidth = 1
+        circle.stroke()
     }
 }
 
@@ -649,13 +567,14 @@ struct BoxButtonStyle: ButtonStyle {
     }
 }
 
-/// A slider that is its whole box. The filled part is a lighter box that ends in a small handle; faint ticks mark
-/// the rest of the track, and the value sits at the right. The track runs the box's full width, so a middle value
+/// A slider that is its whole box. The filled part is a lighter box, brightening toward a small handle at its end
+/// that turns white while dragged; faint ticks an eighth apart mark the rest of the track, lined up so one falls on
+/// the default, and the value sits at the right. Ticks, like the handle, don't show under the label or the value. The track runs the box's full width, so a middle value
 /// sits in the middle; the handle fades out as it passes under the value rather than cross the number.
 /// The fill can end short of the label, which reads over the track. Dragging on the fill changes the value by
 /// how far the pointer moves; a click past the handle jumps there first. Double-click resets it. A drag is one
 /// change, on release. Dragging past a detent, such as the default, catches on it, with a tap on a Force Touch
-/// trackpad; holding ⌘ drags past freely.
+/// trackpad; holding ⌘ drags past freely. The pointer is an open hand over the slider and closes while it drags.
 struct BoxSlider: View {
     let title: String
     let value: Double
@@ -674,12 +593,13 @@ struct BoxSlider: View {
 
     @State private var draft: Double?
     @State private var dragStart: Double?
+    @State private var isHovered = false
     @State private var valueWidth: CGFloat = 0
     @State private var titleWidth: CGFloat = 0
     /// The detent the value is resting on during a drag, so the tap plays once, as it catches.
     @State private var caught: Double?
 
-    private static let tickCount = 7
+    private nonisolated static let tickCount = 7
     /// How near, in screen points, a drag has to come to a detent to catch on it.
     private static let detentReach: CGFloat = 5
     private var span: Double { range.upperBound - range.lowerBound }
@@ -689,6 +609,14 @@ struct BoxSlider: View {
         if let detents { return detents }
         guard let defaultValue, range.lowerBound < defaultValue, defaultValue < range.upperBound else { return [] }
         return [defaultValue]
+    }
+
+    /// Where the ticks sit, as shares of the track: an eighth apart, shifted so one falls on the first detent,
+    /// given as a share of the track too, wherever it is. Without one they sit on the eighths.
+    nonisolated static func tickFractions(firstStop: Double?) -> [Double] {
+        let spacing = 1.0 / Double(tickCount + 1)
+        let phase = firstStop.map { ($0.truncatingRemainder(dividingBy: spacing) + spacing).truncatingRemainder(dividingBy: spacing) } ?? 0
+        return stride(from: phase, through: 1, by: spacing).filter { $0 > 0.02 && $0 < 0.98 }
     }
 
     /// The detent a value catches on: the nearest within `reach`, in the slider's own units.
@@ -709,9 +637,9 @@ struct BoxSlider: View {
             let showsHandle = fill - 8 > titleEnd && fill - 8 < valueStart
             ZStack(alignment: .leading) {
                 ControlBox()
-                ForEach(1...Self.tickCount, id: \.self) { index in
-                    let x = minimum + track * CGFloat(index) / CGFloat(Self.tickCount + 1)
-                    if x > fill + 6, x < valueStart {
+                ForEach(Self.tickFractions(firstStop: stops.first.map { ($0 - range.lowerBound) / span }), id: \.self) { fraction in
+                    let x = minimum + track * CGFloat(fraction)
+                    if x > max(fill + 6, titleEnd), x < valueStart {
                         Capsule()
                             .fill(Color(nsColor: Theme.controlTick))
                             .frame(width: 1.5, height: 9)
@@ -720,18 +648,21 @@ struct BoxSlider: View {
                 }
                 ForEach(stops, id: \.self) { stop in
                     let x = minimum + CGFloat((stop - range.lowerBound) / span) * track
-                    if x > fill + 6, x < valueStart {
+                    if x > max(fill + 6, titleEnd), x < valueStart {
                         Capsule()
                             .fill(Color(nsColor: Theme.controlDetent))
                             .frame(width: 1.5, height: 12)
                             .offset(x: x)
                     }
                 }
-                RoundedRectangle(cornerRadius: PanelMetrics.boxRadius, style: .continuous)
-                    .fill(Color(nsColor: Theme.controlFill))
+                LinearGradient(colors: [Color(nsColor: Theme.controlFillStart), Color(nsColor: Theme.controlFillEnd)],
+                               startPoint: .leading, endPoint: .trailing)
                     .frame(width: fill)
+                    .clipShape(RoundedRectangle(cornerRadius: PanelMetrics.boxRadius, style: .continuous))
+                // The handle turns white while it's dragged.
                 Capsule()
-                    .fill(Color(nsColor: Theme.controlHandle))
+                    .fill(dragStart != nil ? Color.white : Color(nsColor: Theme.controlHandle))
+                    .animation(.easeOut(duration: 0.12), value: dragStart != nil)
                     .frame(width: 3, height: 16)
                     .offset(x: fill - 8)
                     .opacity(showsHandle ? 1 : 0)
@@ -750,8 +681,12 @@ struct BoxSlider: View {
                 .padding(.horizontal, PanelMetrics.insidePadding)
             }
             .contentShape(Rectangle())
+            .pointerStyle(dragStart != nil ? .grabActive : .grabIdle)
+            .onHover { isHovered = $0 }
             .gesture(DragGesture(minimumDistance: 0)
                 .onChanged { drag in
+                    // The hand stays closed for the whole drag, even once the pointer leaves the slider.
+                    NSCursor.closedHand.set()
                     let start = dragStart ?? {
                         // Past the handle, jump to the click; anywhere else, move from where it is.
                         let x = drag.startLocation.x
@@ -783,6 +718,7 @@ struct BoxSlider: View {
                     draft = nil
                     dragStart = nil
                     caught = nil
+                    (isHovered ? NSCursor.openHand : NSCursor.arrow).set()
                     onEnd?()
                 })
             .simultaneousGesture(TapGesture(count: 2).onEnded {

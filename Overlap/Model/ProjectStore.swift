@@ -69,7 +69,11 @@ struct PendingImport: Identifiable {
 final class ProjectStore {
     private(set) var project: Project
     private(set) var selection: Set<UUID> = []
+    /// The panel shown. Selecting clips opens the tab that edits them, and clearing the selection goes back to the
+    /// tab that left, unless you picked a tab yourself in between.
     var activeTab: PanelTab = .canvas
+    /// The project tab selecting clips switched away from, to go back to once nothing is selected.
+    @ObservationIgnored private var tabBeforeSelection: PanelTab?
     var isPanelVisible = true
     var pixelsPerSecond: Double = 40
     var timelineViewportWidth: Double = 800
@@ -222,6 +226,7 @@ final class ProjectStore {
         updateStage()
         let clipIDs = Set(project.tracks.flatMap(\.clips).map(\.id))
         selection = selection.intersection(clipIDs)
+        if selection.isEmpty { leaveSelectionTab() }
         // A crossfade that no longer exists closes the Transitions tab.
         if let transition = selectedTransition, project.crossfade(into: transition) == nil {
             selectTransition(nil)
@@ -291,6 +296,7 @@ final class ProjectStore {
         switch fill {
         case let .color(color): .color(color)
         case let .gradient(gradient): .gradient(gradient)
+        case let .mesh(mesh): .mesh(mesh)
         case let .wallpaper(id): project.asset(id).map { .image(mediaURL(for: $0)) }
         }
     }
@@ -560,7 +566,8 @@ final class ProjectStore {
     /// Selecting a crossfade clears the clip selection and opens the Transitions tab.
     func selectTransition(_ incoming: UUID?) {
         if let incoming {
-            previousTab = activeTab == .transitions ? previousTab : activeTab
+            previousTab = activeTab == .transitions ? previousTab : (tabBeforeSelection ?? activeTab)
+            tabBeforeSelection = nil
             selection = []
             selectedTransition = incoming
             activeTab = .transitions
@@ -722,10 +729,10 @@ final class ProjectStore {
         select(Set(project.tracks.flatMap(\.clips).map(\.id)))
     }
 
-    /// Steps by whole frames at the canvas frame rate, or 30 fps without a canvas.
+    /// Steps by whole frames at the project's frame rate.
     func stepFrames(_ count: Int) {
         playback.pause()
-        let frame = 1 / (project.canvas?.frameRate ?? 30)
+        let frame = 1 / project.frameRate
         playback.seek(to: Time(seconds: playback.currentTime.seconds + Double(count) * frame))
     }
 
@@ -883,11 +890,24 @@ final class ProjectStore {
             isCropping = false
         }
         selection = ids
-        let applicable = applicableTabs
-        // Clip tabs follow the selection; Media and Canvas never switch on their own.
-        if !activeTab.isProjectTab, !applicable.isEmpty, !applicable.contains(activeTab), let main = mainTab {
-            activeTab = main
-        }
+        guard !ids.isEmpty else { return leaveSelectionTab() }
+        // The tab follows the selection from anywhere, staying put while it already edits every selected clip.
+        guard !applicableTabs.contains(activeTab), let main = mainTab else { return }
+        if activeTab.isProjectTab { tabBeforeSelection = activeTab }
+        activeTab = main
+    }
+
+    /// Shows a tab you chose, which stays chosen when the selection clears.
+    func showTab(_ tab: PanelTab) {
+        activeTab = tab
+        isPanelVisible = true
+        tabBeforeSelection = nil
+    }
+
+    /// With nothing selected, goes back to the project tab that selecting clips left.
+    private func leaveSelectionTab() {
+        if let tab = tabBeforeSelection, !activeTab.isProjectTab, activeTab != .transitions { activeTab = tab }
+        tabBeforeSelection = nil
     }
 
     /// Tabs that can edit every selected clip.
@@ -925,7 +945,8 @@ final class ProjectStore {
 
     /// Copies files into the project and adds them to the library, and to the timeline when `placement` is given.
     /// `imported` hears about each asset as it arrives.
-    func importFiles(_ urls: [URL], placement: (start: Time, target: TrackTarget)? = nil, imported: ((Asset) -> Void)? = nil) {
+    func importFiles(_ urls: [URL], placement: (start: Time, target: TrackTarget)? = nil, asWallpapers: Bool = false,
+                     imported: ((Asset) -> Void)? = nil) {
         Task {
             var nextStart = placement?.start
             // Several files dropped together line up one after another on the same track.
@@ -933,7 +954,8 @@ final class ProjectStore {
             var failures: [String] = []
             for url in urls {
                 let pending = PendingImport(name: url.lastPathComponent)
-                pendingImports.append(pending)
+                // Wallpapers come in from the Canvas tab, so the Media tab doesn't show them arriving.
+                if !asWallpapers { pendingImports.append(pending) }
                 do {
                     let probe = try await MediaImporter.probe(url)
                     let id = UUID()
@@ -943,7 +965,7 @@ final class ProjectStore {
                         id: id, fileName: fileName, displayName: url.lastPathComponent, kind: probe.kind,
                         duration: probe.duration, hasAudio: probe.hasAudio, pixelWidth: probe.pixelWidth,
                         pixelHeight: probe.pixelHeight, frameRate: probe.frameRate,
-                        sampleRate: probe.sampleRate, channelCount: probe.channelCount
+                        sampleRate: probe.sampleRate, channelCount: probe.channelCount, isWallpaper: asWallpapers ? true : nil
                     )
                     let start = nextStart
                     let target = nextTarget
@@ -971,59 +993,32 @@ final class ProjectStore {
 
     // MARK: Canvas
 
-    /// A fixed shape keeps the canvas's resolution: its shorter side stays as it was, so a 4K widescreen canvas
-    /// turned vertical is 2160 × 3840.
-    func setCanvasAspect(_ aspect: CanvasAspect) {
-        apply("Change Canvas Shape") { project in
-            project.canvasAspect = aspect
-            let rate = project.canvas?.frameRate ?? Project.defaultCanvas.frameRate
-            if let size = aspect.size {
-                let shorter = project.canvas.map { min($0.width, $0.height) } ?? min(size.width, size.height)
-                let scale = Double(shorter) / Double(min(size.width, size.height))
-                project.canvas = Canvas(width: Self.evenSize(Int((Double(size.width) * scale).rounded())),
-                                        height: Self.evenSize(Int((Double(size.height) * scale).rounded())), frameRate: rate)
-            } else if aspect == .auto {
-                project.canvas = project.firstVideoCanvas ?? Canvas(width: 1920, height: 1080, frameRate: rate)
-            } else if project.canvas == nil {
-                project.canvas = Project.defaultCanvas
-            }
-        }
-    }
-
     /// Resizes the canvas from the preview, keeping everything on it where it is. `frame` is in the current
     /// canvas's pixels.
     func resizeCanvas(to frame: CGRect) {
         apply("Resize Canvas") { $0.resizeCanvas(to: frame) }
     }
 
-    /// A new canvas size. A fixed shape stays chosen, since the Canvas tab keeps its proportions as you type. Auto
-    /// gives way to the shape the size has, or Custom, since the size no longer follows the first video.
-    func setCanvasSize(width: Int, height: Int) {
-        apply("Change Canvas Size") { project in
-            let canvas = Canvas(width: Self.evenSize(width), height: Self.evenSize(height),
-                                frameRate: project.canvas?.frameRate ?? Project.defaultCanvas.frameRate)
-            if project.canvasAspect == .auto {
-                project.canvasAspect = CanvasAspect.shape(width: canvas.width, height: canvas.height) ?? .custom
-            }
-            project.canvas = canvas
-        }
-    }
-
-    /// Kept even and between 16 and 8192 pixels, so video encoders accept it.
-    private static func evenSize(_ value: Int) -> Int {
-        min(max(value, 16), 8192) / 2 * 2
-    }
-
-    func setFrameRate(_ rate: Double) {
-        apply("Change Frame Rate") { project in
-            var canvas = project.canvas ?? Project.defaultCanvas
-            canvas.frameRate = rate
-            project.canvas = canvas
-        }
-    }
-
     func setBackground(_ fill: BackgroundFill?) {
-        apply("Change Background") { $0.background = fill }
+        apply("Change Background") { $0.setBackground(fill) }
+    }
+
+    /// Changes how the pictures sit on the background.
+    func setFrame(_ name: String, _ change: @escaping (inout PictureFrame) -> Void) {
+        apply(name) { project in
+            var frame = project.frame ?? PictureFrame()
+            change(&frame)
+            project.frame = frame
+        }
+    }
+
+    /// Shows a frame change while it's dragged.
+    func previewFrame(_ change: (inout PictureFrame) -> Void) {
+        previewLook { project in
+            var frame = project.frame ?? PictureFrame()
+            change(&frame)
+            project.frame = frame
+        }
     }
 
     /// Picks image files to use as wallpapers: each is kept in the wallpaper library for every project, and the
@@ -1050,8 +1045,23 @@ final class ProjectStore {
             apply(.wallpaper(existing.id))
             return
         }
-        importFiles([url]) { asset in
+        importFiles([url], asWallpapers: true) { asset in
             apply(.wallpaper(asset.id))
+        }
+    }
+
+    /// Uses one of the Mac's aerial wallpapers, bringing a 4K still of it into the project unless it's already there:
+    /// its portrait version on a canvas taller than it's wide, when it has one.
+    func useAerial(_ aerial: SystemWallpapers.Aerial, use: ((BackgroundFill) -> Void)? = nil) {
+        let canvas = project.canvas ?? Project.defaultCanvas
+        let portrait = canvas.height > canvas.width
+        if let existing = project.assets.first(where: { $0.kind == .image && $0.displayName == aerial.fileName(portrait: portrait) }) {
+            if let use { use(.wallpaper(existing.id)) } else { setBackground(.wallpaper(existing.id)) }
+            return
+        }
+        Task {
+            guard let still = await SystemWallpapers.still(of: aerial, portrait: portrait) else { return }
+            useWallpaper(still, use: use)
         }
     }
 
@@ -1142,7 +1152,7 @@ final class ProjectStore {
 
     /// Whether a clip plays exactly that loop now, to half a frame.
     func plays(_ loop: Loop, in clip: Clip) -> Bool {
-        let tolerance = 0.5 / max(project.canvas?.frameRate ?? 30, 1)
+        let tolerance = 0.5 / project.frameRate
         let end = clip.sourceStart.seconds + clip.duration.seconds * clip.speed
         return abs(clip.sourceStart.seconds - loop.start) < tolerance && abs(end - loop.end) < tolerance
     }

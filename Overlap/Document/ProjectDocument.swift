@@ -140,8 +140,7 @@ final class ProjectDocument: NSDocument {
 
     @objc func showPanelTab(_ sender: NSMenuItem) {
         guard let tab = PanelTab(rawValue: sender.tag) else { return }
-        store.activeTab = tab
-        store.isPanelVisible = true
+        store.showTab(tab)
     }
 
     @objc func delete(_ sender: Any?) {

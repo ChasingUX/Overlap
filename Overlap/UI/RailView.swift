@@ -1,10 +1,14 @@
 import SwiftUI
 
-/// The icon rail: Canvas, the clip tabs, then Media, evenly spaced. A dot marks tabs that apply to the selection.
+/// The icon rail: Canvas, the clip tabs, then Media, evenly spaced. Selecting a clip opens its tab, so the rail
+/// needs no marks for the selection. A tab's name and shortcut show beside it after a moment's hover, sooner than
+/// a system tooltip, and at once going from one tab to the next.
 struct RailView: View {
     static let width: CGFloat = 52
     let store: ProjectStore
     @State private var hoveredTab: PanelTab?
+    @State private var tooltip: PanelTab?
+    @State private var tooltipTimer: Task<Void, Never>?
 
     var body: some View {
         VStack(spacing: 12) {
@@ -24,39 +28,84 @@ struct RailView: View {
 
     private func button(for tab: PanelTab) -> some View {
         let isActive = store.isPanelVisible && store.activeTab == tab
-        let applies = store.applicableTabs.contains(tab)
         // The chosen tab fills with the accent color; others show a soft gray tile on hover, and their icon brightens.
         let isHovered = hoveredTab == tab
         let fill = isActive ? Color.accentColor : (isHovered ? Color.primary.opacity(0.1) : Color.clear)
         return Button {
-            store.activeTab = tab
-            store.isPanelVisible = true
+            tooltipTimer?.cancel()
+            tooltip = nil
+            store.showTab(tab)
         } label: {
             tab.icon.image
                 .font(.system(size: 16))
                 .frame(width: 30, height: 30)
                 .foregroundStyle(isActive ? Color.white : Color.primary.opacity(isHovered ? 0.85 : 0.4))
                 .background(RoundedRectangle(cornerRadius: 7).fill(fill))
-                .overlay(alignment: .topTrailing) {
-                    if applies {
-                        Circle()
-                            .fill(isActive ? Color.white : Color.accentColor)
-                            .frame(width: 5, height: 5)
-                            .padding(3)
-                    }
-                }
                 .contentShape(Rectangle())
         }
         .buttonStyle(PressScaleButtonStyle())
-        .onHover { inside in
-            if inside {
-                hoveredTab = tab
-            } else if hoveredTab == tab {
-                hoveredTab = nil
+        .overlay(alignment: .leading) {
+            if tooltip == tab {
+                // Just past the rail's edge, over the panel.
+                RailTooltip(title: tab.title, shortcut: "⌘\(tab.rawValue)")
+                    .offset(x: 30 + (Self.width - 30) / 2 + 6)
+                    .transition(.opacity)
+                    .allowsHitTesting(false)
             }
         }
-        .help("\(tab.title) (⌘\(tab.rawValue))")
+        .animation(.easeOut(duration: 0.1), value: tooltip)
+        .onHover { hover(tab, $0) }
         .accessibilityLabel(tab.title)
+    }
+
+    private func hover(_ tab: PanelTab, _ inside: Bool) {
+        tooltipTimer?.cancel()
+        if inside {
+            hoveredTab = tab
+            if tooltip != nil {
+                tooltip = tab
+                return
+            }
+            tooltipTimer = Task {
+                try? await Task.sleep(for: .milliseconds(450))
+                if !Task.isCancelled { tooltip = tab }
+            }
+        } else if hoveredTab == tab {
+            hoveredTab = nil
+            // A moment's grace, so moving to the next tab keeps a tip showing.
+            tooltipTimer = Task {
+                try? await Task.sleep(for: .milliseconds(150))
+                if !Task.isCancelled { tooltip = nil }
+            }
+        }
+    }
+}
+
+/// A tab's name and its shortcut, on a small dark tag.
+private struct RailTooltip: View {
+    let title: String
+    let shortcut: String
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text(title)
+                .foregroundStyle(.primary)
+            Text(shortcut)
+                .foregroundStyle(.secondary)
+        }
+        .font(.system(size: 12))
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background {
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(Color(nsColor: Theme.tooltip))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
+                }
+                .shadow(color: .black.opacity(0.4), radius: 6, y: 2)
+        }
+        .fixedSize()
     }
 }
 
@@ -94,7 +143,8 @@ struct PanelView: View {
     }
 }
 
-/// A clip tab: its title, then sections spaced out down the panel.
+/// A tab's sections, spaced out down the panel. The rail names the tab, so the panel shows no title of its own;
+/// VoiceOver still reads it.
 struct ClipPanel<Content: View>: View {
     let title: String
     @ViewBuilder var content: Content
@@ -102,30 +152,28 @@ struct ClipPanel<Content: View>: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
-                Text(title)
-                    .font(.headline)
                 content
             }
             .padding(.horizontal, 14)
-            .padding(.vertical, 12)
+            .padding(.top, PanelMetrics.firstLabelTop)
+            .padding(.bottom, 12)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(title)
     }
 }
 
+/// What a tab shows with nothing to work on: a title and a line or two saying what to do, without an icon.
 struct PlaceholderPanel: View {
-    let icon: AppIcon
     let title: String
     let message: String
     var action: (title: String, perform: () -> Void)?
 
     var body: some View {
         VStack(spacing: 8) {
-            icon.image
-                .font(.system(size: 26))
-                .foregroundStyle(.secondary)
             Text(title)
-                .font(.headline)
+                .font(PanelMetrics.emptyTitleFont)
                 .multilineTextAlignment(.center)
             Text(message)
                 .font(.callout)

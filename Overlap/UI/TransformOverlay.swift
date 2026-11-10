@@ -5,7 +5,8 @@ import CoreImage
 /// Handles over the preview for a picture clicked there: drag inside to move it, a corner to scale it (from the
 /// opposite corner, or from the middle with Option held), the top handle to rotate it, or in crop mode an edge
 /// to crop it. Clicking a picture selects it and shows its handles;
-/// clicking anywhere else in the preview, inside the canvas or around it, hides them. Double-clicking text types
+/// clicking anywhere else in the preview, inside the canvas or around it, clears the selection, as an empty spot on
+/// the timeline does, which hides them. Double-clicking text types
 /// into it right there; double-clicking a picture crops it, and again stops. Right-clicking a picture offers Crop,
 /// Reset Crop and Reset Position. Selecting on the timeline
 /// doesn't show them. The overlay covers the whole preview, so handles off the canvas can still be grabbed.
@@ -85,6 +86,8 @@ final class TransformOverlay: NSView {
     init(store: ProjectStore) {
         self.store = store
         super.init(frame: .zero)
+        // A canvas dragged bigger draws only inside the preview, never over the panel or the timeline.
+        clipsToBounds = true
     }
 
     @available(*, unavailable)
@@ -106,13 +109,27 @@ final class TransformOverlay: NSView {
         canvasRect.width / canvas.width
     }
 
-    /// Canvas points to view points.
+    /// Where the pictures are laid out: the whole canvas, or the part inside the frame's padding, which they shrink
+    /// into. Their places and sizes, and the handles, are all measured in it, so the padding changes none of them.
+    private var contentRect: CGRect {
+        let scale = CGFloat(state?.project.frame?.scale ?? 1)
+        let width = canvasRect.width * scale
+        let height = canvasRect.height * scale
+        return CGRect(x: canvasRect.midX - width / 2, y: canvasRect.midY - height / 2, width: width, height: height)
+    }
+
+    /// View points per point of the laid-out canvas.
+    private var contentScale: CGFloat {
+        contentRect.width / canvas.width
+    }
+
+    /// Laid-out canvas points to view points.
     private func view(_ point: CGPoint) -> CGPoint {
-        CGPoint(x: canvasRect.minX + point.x * viewScale, y: canvasRect.minY + point.y * viewScale)
+        CGPoint(x: contentRect.minX + point.x * contentScale, y: contentRect.minY + point.y * contentScale)
     }
 
     private func canvasPoint(_ point: CGPoint) -> CGPoint {
-        CGPoint(x: (point.x - canvasRect.minX) / viewScale, y: (point.y - canvasRect.minY) / viewScale)
+        CGPoint(x: (point.x - contentRect.minX) / contentScale, y: (point.y - contentRect.minY) / contentScale)
     }
 
     /// The whole picture's size before its own scale: the source fitted to the canvas, or the drawn text.
@@ -180,7 +197,7 @@ final class TransformOverlay: NSView {
 
     /// How near, in canvas points, a picture has to come to a line to snap to it: six points on screen.
     private var snapDistance: CGFloat {
-        6 / max(0.001, viewScale)
+        6 / max(0.001, contentScale)
     }
 
     /// The lines pictures snap to: the canvas's edges and middle, and the edges and middles of the other pictures
@@ -234,7 +251,7 @@ final class TransformOverlay: NSView {
             return
         }
         // Within half a point on screen counts as on the line.
-        let reach = 0.5 / max(0.001, viewScale)
+        let reach = 0.5 / max(0.001, contentScale)
         func met(_ low: CGFloat, _ middle: CGFloat, _ high: CGFloat, _ lines: [CGFloat]) -> [CGFloat] {
             let meets = { (edge: CGFloat) in lines.filter { abs($0 - edge) <= reach } }
             // With both edges on lines, the middle line says nothing more.
@@ -291,7 +308,7 @@ final class TransformOverlay: NSView {
             return
         }
         // View points per canvas pixel at the text's own scale, matching how the title is drawn.
-        let scale = viewScale * clip.visual.scale
+        let scale = contentScale * clip.visual.scale
         let size = CGFloat(title.size) * canvas.height / 1080 * scale
         let inset = title.backdrop == nil ? CGSize(width: 2 * scale, height: 2 * scale) : CGSize(width: size * 0.45, height: size * 0.3)
         let isNew = titleEditor == nil
@@ -429,8 +446,8 @@ final class TransformOverlay: NSView {
 
     // MARK: Mouse
 
-    /// Clicks belong to the overlay over a picture, and anywhere in the preview while handles show, to hide them.
-    /// Elsewhere they fall through.
+    /// Clicks belong to the overlay over a picture, just outside the canvas's edges, to resize it, and anywhere in the
+    /// preview while handles show, to hide them. Elsewhere they fall through.
     override func hitTest(_ point: NSPoint) -> NSView? {
         let local = convert(point, from: superview)
         guard bounds.contains(local), local.y < bounds.maxY - Self.dividerReach else { return nil }
@@ -440,15 +457,28 @@ final class TransformOverlay: NSView {
         }
         // ⌘ as the click being placed has it, which is the keyboard's when it's a person's.
         let flags = NSApplication.shared.currentEvent?.modifierFlags ?? NSEvent.modifierFlags
-        if flags.contains(.command), canvasEdges(at: local) != nil { return self }
-        return selectedClip != nil || target(at: local) != nil ? self : nil
+        if resizeEdges(at: local, flags: flags) != nil { return self }
+        // With anything selected, an empty spot takes the click too, to clear the selection.
+        return state?.selection.isEmpty == false || target(at: local) != nil ? self : nil
     }
 
     // MARK: Resizing the canvas
 
+    /// The canvas edges a press at `point` resizes, if any. Plainly, from just outside the canvas: a picture as big as
+    /// the canvas has its edges and corners on the canvas's, so on or inside them a drag stays the picture's. With ⌘,
+    /// from either side of an edge. Without ⌘, a showing picture's handles win, even where one pokes past a corner.
+    private func resizeEdges(at point: CGPoint, flags: NSEvent.ModifierFlags) -> (horizontal: Int, vertical: Int)? {
+        guard titleEditor == nil else { return nil }
+        if flags.contains(.command) { return canvasEdges(at: point) }
+        guard !canvasRect.contains(point), let edges = canvasEdges(at: point, reach: 10) else { return nil }
+        if let clip = selectedClip, let drag = handle(of: clip, at: point) {
+            if case .move = drag {} else { return nil }
+        }
+        return edges
+    }
+
     /// The canvas edges within reach of a point: −1 for the left or top, 1 for the right or bottom, 0 for neither.
-    private func canvasEdges(at point: CGPoint) -> (horizontal: Int, vertical: Int)? {
-        let reach: CGFloat = 6
+    private func canvasEdges(at point: CGPoint, reach: CGFloat = 6) -> (horizontal: Int, vertical: Int)? {
         guard canvasRect.width > 0, canvasRect.insetBy(dx: -reach, dy: -reach).contains(point) else { return nil }
         let horizontal = abs(point.x - canvasRect.minX) <= reach ? -1 : abs(point.x - canvasRect.maxX) <= reach ? 1 : 0
         let vertical = abs(point.y - canvasRect.minY) <= reach ? -1 : abs(point.y - canvasRect.maxY) <= reach ? 1 : 0
@@ -507,7 +537,7 @@ final class TransformOverlay: NSView {
 
     private func updateResizeCursor(at point: CGPoint, flags: NSEvent.ModifierFlags) {
         guard canvasResize == nil else { return }
-        if flags.contains(.command), titleEditor == nil, let edges = canvasEdges(at: point) {
+        if let edges = resizeEdges(at: point, flags: flags) {
             resizeCursor(edges).set()
             showsResizeCursor = true
         } else if showsResizeCursor {
@@ -534,8 +564,22 @@ final class TransformOverlay: NSView {
 
     private func dragCanvas(to point: CGPoint, bothSides: Bool) {
         guard var resize = canvasResize, viewScale > 0 else { return }
-        let dx = (point.x - resize.from.x) / viewScale
-        let dy = (point.y - resize.from.y) / viewScale
+        var dx = (point.x - resize.from.x) / viewScale
+        var dy = (point.y - resize.from.y) / viewScale
+        // The edges stop at the preview's own, so the panel beside it and the timeline below stop the canvas. With ⌥
+        // both edges stop once either one reaches.
+        let room = CGRect(x: (bounds.minX - canvasRect.minX) / viewScale, y: (bounds.minY - canvasRect.minY) / viewScale,
+                          width: bounds.width / viewScale, height: (bounds.height - Self.dividerReach) / viewScale)
+        switch resize.horizontal {
+        case -1: dx = max(dx, room.minX, bothSides ? canvas.width - room.maxX : -.infinity)
+        case 1: dx = min(dx, room.maxX - canvas.width, bothSides ? -room.minX : .infinity)
+        default: break
+        }
+        switch resize.vertical {
+        case -1: dy = max(dy, room.minY, bothSides ? canvas.height - room.maxY : -.infinity)
+        case 1: dy = min(dy, room.maxY - canvas.height, bothSides ? -room.minY : .infinity)
+        default: break
+        }
         var minX: CGFloat = 0, maxX = canvas.width, minY: CGFloat = 0, maxY = canvas.height
         switch resize.horizontal {
         case -1: minX += dx; if bothSides { maxX -= dx }
@@ -581,6 +625,9 @@ final class TransformOverlay: NSView {
             NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
         }
         resize.guides = guides
+        // A picture edge it caught on can lie past the preview's; it stops there all the same.
+        (minX, maxX) = (max(minX, room.minX), min(maxX, room.maxX))
+        (minY, maxY) = (max(minY, room.minY), min(maxY, room.maxY))
         // Never thinner than a sliver: the edge being dragged stops, or both stop around the middle.
         let smallest: CGFloat = 64
         if maxX - minX < smallest {
@@ -602,10 +649,14 @@ final class TransformOverlay: NSView {
     private func pictureEdges() -> (vertical: [CGFloat], horizontal: [CGFloat]) {
         var vertical: [CGFloat] = []
         var horizontal: [CGFloat] = []
+        // Pictures are laid out inside the frame's padding; the canvas's own edges are outside it.
+        let scale = CGFloat(state?.project.frame?.scale ?? 1)
+        let x = { (value: CGFloat) in self.canvas.width / 2 + (value - self.canvas.width / 2) * scale }
+        let y = { (value: CGFloat) in self.canvas.height / 2 + (value - self.canvas.height / 2) * scale }
         for clip in visibleClips {
             guard let box = corners(of: clip, visual: clip.visual).map(boundingBox) else { continue }
-            vertical += [box.minX, box.maxX]
-            horizontal += [box.minY, box.maxY]
+            vertical += [x(box.minX), x(box.maxX)]
+            horizontal += [y(box.minY), y(box.maxY)]
         }
         return (vertical, horizontal)
     }
@@ -786,7 +837,7 @@ final class TransformOverlay: NSView {
             NSMenu.popUpContextMenu(menu, with: event, for: self)
             return
         }
-        if event.modifierFlags.contains(.command), let edges = canvasEdges(at: point) {
+        if let edges = resizeEdges(at: point, flags: event.modifierFlags) {
             beginCanvasResize(edges, at: point)
             return
         }
@@ -805,6 +856,7 @@ final class TransformOverlay: NSView {
             }
         }
         guard let (clip, found) = target(at: point) else {
+            store.select([])
             store.handlesClip = nil
             store.isCropping = false
             return
@@ -1106,8 +1158,9 @@ extension TransformOverlay {
     }
 
     /// Clicks the selected picture to show its handles, then clicks the preview's surround, outside the canvas.
-    /// Reports whether the handles showed after each click.
-    func debugClickOutsideCanvas() async -> (afterPicture: Bool, afterOutside: Bool)? {
+    /// Reports whether the handles showed after each click, and the selection and tab after the outside click.
+    /// Then selects the picture as the timeline does, with no handles, and clicks the surround again.
+    func debugClickOutsideCanvas() async -> [String: Any]? {
         guard let id = state?.selection.first, let clip = visibleClips.first(where: { $0.id == id }), let window else { return nil }
         NSApplication.shared.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
@@ -1123,10 +1176,21 @@ extension TransformOverlay {
             }
             try? await Task.sleep(for: .milliseconds(300))
         }
+        let surround = CGPoint(x: canvasRect.minX / 2, y: bounds.midY)
         await click(view(center(of: clip.visual)))
         let afterPicture = store.handlesClip == id
-        await click(CGPoint(x: canvasRect.minX / 2, y: bounds.midY))
-        return (afterPicture, store.handlesClip == id)
+        let tabWithPicture = store.activeTab.title
+        await click(surround)
+        var report: [String: Any] = ["handlesAfterPictureClick": afterPicture, "tabWithPicture": tabWithPicture,
+                                     "handlesAfterOutsideClick": store.handlesClip == id,
+                                     "selectedAfterOutsideClick": !store.selection.isEmpty, "tabAfterOutsideClick": store.activeTab.title]
+        store.select([id])
+        try? await Task.sleep(for: .milliseconds(300))
+        report["tabAfterTimelineSelect"] = store.activeTab.title
+        await click(surround)
+        report["selectedAfterSecondOutsideClick"] = !store.selection.isEmpty
+        report["tabAfterSecondOutsideClick"] = store.activeTab.title
+        return report
     }
 
     /// Clicks the selected picture and drags its bottom-right corner 120 points right and 60 down, with ⌘ held so
@@ -1183,7 +1247,7 @@ extension TransformOverlay {
         guard let id = state?.selection.first, let clip = visibleClips.first(where: { $0.id == id }), let window,
               let box = corners(of: clip, visual: clip.visual).map(boundingBox) else { return nil }
         let start = view(center(of: clip.visual))
-        let target = -(box.minX - 3) * viewScale
+        let target = -(box.minX - 3) * contentScale
         let send = { (type: NSEvent.EventType, point: CGPoint) in
             guard let event = NSEvent.mouseEvent(with: type, location: self.convert(point, to: nil), modifierFlags: [], timestamp: 0,
                                                  windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)
@@ -1206,6 +1270,7 @@ extension TransformOverlay {
     }
 
     var debugCanvasRect: CGRect { canvasRect }
+    var debugBounds: CGRect { bounds }
     var debugViewScale: CGFloat { viewScale }
     var debugResizeGuides: [Double] {
         canvasResize.map { ($0.guides.vertical + $0.guides.horizontal).map(Double.init) } ?? []
@@ -1213,10 +1278,15 @@ extension TransformOverlay {
 
     /// Holds ⌘ and drags the canvas's right edge by `offset` view points, with ⌥ too when `bothSides`, then calls
     /// `whileHeld` before letting go.
-    func debugResizeCanvas(by offset: CGFloat, bothSides: Bool, whileHeld: () async -> Void) async {
+    /// `from` is where the press starts, in points out from the edge; without `holdingCommand`, plainly. `left` drags
+    /// the left edge, out to the left, instead of the right.
+    func debugResizeCanvas(by offset: CGFloat, bothSides: Bool, from: CGFloat = 0, holdingCommand: Bool = true,
+                           left: Bool = false, whileHeld: () async -> Void) async {
         guard let window else { return }
-        let start = CGPoint(x: canvasRect.maxX, y: canvasRect.midY)
-        let flags: NSEvent.ModifierFlags = bothSides ? [.command, .option] : .command
+        let start = CGPoint(x: left ? canvasRect.minX - from : canvasRect.maxX + from, y: canvasRect.midY)
+        let offset = left ? -offset : offset
+        var flags: NSEvent.ModifierFlags = bothSides ? .option : []
+        if holdingCommand { flags.insert(.command) }
         let send = { (type: NSEvent.EventType, point: CGPoint) in
             guard let event = NSEvent.mouseEvent(with: type, location: self.convert(point, to: nil), modifierFlags: flags, timestamp: 0,
                                                  windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)
@@ -1242,7 +1312,7 @@ extension TransformOverlay {
         guard let id = state?.selection.first, let clip = visibleClips.first(where: { $0.id == id }), let window,
               let box = corners(of: clip, visual: clip.visual).map(boundingBox) else { return nil }
         let start = view(center(of: clip.visual))
-        let target = (canvas.width / 2 - box.minX) * viewScale - 3
+        let target = (canvas.width / 2 - box.minX) * contentScale - 3
         let send = { (type: NSEvent.EventType, point: CGPoint) in
             guard let event = NSEvent.mouseEvent(with: type, location: self.convert(point, to: nil),
                                                  modifierFlags: holdingCommand ? .command : [], timestamp: 0,

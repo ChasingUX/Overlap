@@ -20,6 +20,11 @@ struct Asset: Identifiable, Hashable, Sendable, Codable {
     var frameRate: Double?
     var sampleRate: Double?
     var channelCount: Int?
+    /// Brought in from the Canvas tab as a background rather than to place on the timeline, so the Media tab leaves
+    /// it out.
+    var isWallpaper: Bool?
+
+    var isListedInMedia: Bool { isWallpaper != true }
 }
 
 struct Clip: Identifiable, Hashable, Sendable, Codable {
@@ -103,10 +108,11 @@ struct Track: Identifiable, Hashable, Sendable, Codable {
     var height: Double = 56
 }
 
+/// The size pictures are composed at. The rate they play at is the project's `frameRate`; projects saved when
+/// the canvas had one of its own still open, without it.
 struct Canvas: Hashable, Sendable, Codable {
     var width: Int
     var height: Int
-    var frameRate: Double
 }
 
 /// Everything saved in `Project.json`. Tracks are ordered bottom to top: higher indexes draw on top.
@@ -119,18 +125,32 @@ struct Project: Equatable, Sendable, Codable {
     var masterVolume: Double = 1
     /// The curve new crossfades use until they're given their own.
     var defaultCrossfadeCurve: Curve = .equalPower
-    /// How the canvas size is chosen. Auto follows the first video added.
+    /// How the canvas size is chosen. Auto follows the first video added; Custom is a size dragged to on the preview.
     var canvasAspect = CanvasAspect.auto
-    /// What shows behind the picture; nil is none, and the canvas is black where nothing covers it.
+    /// What shows behind the picture; nil is none, and the canvas is a dark gray where nothing covers it. Set it with
+    /// `setBackground(_:)`, which frames the pictures on it.
     var background: BackgroundFill?
+    /// How the pictures sit on the background: nil until a background is chosen, and again once it's None.
+    var frame: PictureFrame?
     /// Whether exports are brought to `loudnessTarget`. Off leaves the mix as it plays.
     var normalizesLoudness = true
 
     /// The loudness exports are brought to, in LUFS: the level YouTube and streaming services play at.
     static let loudnessTarget = -14.0
 
-    /// The size and frame rate pictures are composed at, until a video sets one.
-    static let defaultCanvas = Canvas(width: 1920, height: 1080, frameRate: 30)
+    /// The size pictures are composed at, until a video sets one.
+    static let defaultCanvas = Canvas(width: 1920, height: 1080)
+
+    /// Frame rates video is usually made at. The project plays at the one nearest its first video's.
+    static let commonFrameRates = [23.976, 24, 25, 29.97, 30, 50, 59.94, 60]
+
+    /// The rate the picture plays and exports at: the first video's on the timeline, rounded to the nearest
+    /// common rate so a screen recording's uneven one comes out even, or 30 without a video.
+    var frameRate: Double {
+        let used = Set(tracks.flatMap(\.clips).map(\.assetID))
+        guard let rate = assets.first(where: { $0.kind == .video && used.contains($0.id) })?.frameRate, rate > 0 else { return 30 }
+        return Self.commonFrameRates.min { abs($0 - rate) < abs($1 - rate) } ?? 30
+    }
 
     var duration: Time {
         tracks.flatMap(\.clips).map(\.end).max() ?? .zero
@@ -221,6 +241,8 @@ extension Project {
         defaultCrossfadeCurve = try container.decodeIfPresent(Curve.self, forKey: .defaultCrossfadeCurve) ?? .equalPower
         canvasAspect = try container.decodeIfPresent(CanvasAspect.self, forKey: .canvasAspect) ?? .auto
         background = try container.decodeIfPresent(BackgroundFill.self, forKey: .background)
+        // Projects saved while the frame lived in a group of its own wrote one at zero to mean none.
+        frame = try container.decodeIfPresent(PictureFrame.self, forKey: .frame).flatMap { $0 == PictureFrame() ? nil : $0 }
         normalizesLoudness = try container.decodeIfPresent(Bool.self, forKey: .normalizesLoudness) ?? true
     }
 }
@@ -399,20 +421,12 @@ extension Project {
     private mutating func newClip(asset assetID: UUID, at start: Time) -> Clip? {
         guard let asset = asset(assetID) else { return nil }
         if asset.kind == .video, canvasAspect == .auto, !hasVideoClips, let width = asset.pixelWidth, let height = asset.pixelHeight {
-            canvas = Canvas(width: width, height: height, frameRate: asset.frameRate ?? 30)
+            canvas = Canvas(width: width, height: height)
         } else if asset.kind == .image, canvas == nil {
             canvas = Self.defaultCanvas
         }
         let duration = asset.kind == .image ? Clip.stillDuration : asset.duration
         return Clip(assetID: assetID, start: max(.zero, start), sourceStart: .zero, duration: duration)
-    }
-
-    /// The size and frame rate of the first video imported that's on the timeline, which an Auto canvas follows.
-    var firstVideoCanvas: Canvas? {
-        let used = Set(tracks.flatMap(\.clips).map(\.assetID))
-        guard let video = assets.first(where: { $0.kind == .video && used.contains($0.id) }),
-              let width = video.pixelWidth, let height = video.pixelHeight else { return nil }
-        return Canvas(width: width, height: height, frameRate: video.frameRate ?? Self.defaultCanvas.frameRate)
     }
 
     private var hasVideoClips: Bool {
@@ -562,7 +576,7 @@ extension Project {
                 tracks[track].clips[index].visual = visual(of: clip, keptFrom: from, onto: to)
             }
         }
-        canvas = Canvas(width: Int(size.width), height: Int(size.height), frameRate: old.frameRate)
+        canvas = Canvas(width: Int(size.width), height: Int(size.height))
         canvasAspect = .custom
     }
 
@@ -747,11 +761,19 @@ extension Project {
         }
     }
 
+    /// Sets what fills the canvas behind the pictures. Choosing one frames them as `PictureFrame.standard`, inset
+    /// with rounded corners and a shadow, unless they're framed already, as you left it, from another background.
+    /// None takes the frame away, so the pictures fill the canvas again.
+    mutating func setBackground(_ fill: BackgroundFill?) {
+        frame = fill == nil ? nil : frame ?? .standard
+        background = fill
+    }
+
     /// Removes an asset with its clips, and wherever it's a wallpaper.
     mutating func removeAsset(_ id: UUID) {
         let wallpaper = BackgroundFill.wallpaper(id)
         removeClips(Set(tracks.flatMap(\.clips).filter { $0.assetID == id || $0.fill == wallpaper }.map(\.id)))
-        if background == wallpaper { background = nil }
+        if background == wallpaper { setBackground(nil) }
         assets.removeAll { $0.id == id }
     }
 }

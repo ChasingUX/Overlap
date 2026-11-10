@@ -50,6 +50,11 @@ enum Theme {
     /// A slider's detent, such as its default, a step brighter than the other ticks.
     static let controlDetent = NSColor(white: 1, alpha: 0.36)
     static let controlHandle = NSColor(white: 1, alpha: 0.5)
+    /// A slider's fill brightens toward its handle, from just above the box to a step past `controlFill`.
+    static let controlFillStart = gray(0x27)
+    static let controlFillEnd = gray(0x33)
+    /// The rail's tooltips, a step lighter than the chrome they float over.
+    static let tooltip = gray(0x2A)
     /// Native sliders are tinted gray instead of the accent blue.
     static let sliderTint = NSColor(white: 0.78, alpha: 1)
 

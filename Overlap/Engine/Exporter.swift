@@ -14,6 +14,7 @@ enum Exporter {
         var writing: BuiltComposition
         var settings: ExportSettings
         var canvas: Canvas
+        var frameRate: Double
         var loudnessTarget: Double?
         var destination: URL
     }
@@ -42,6 +43,7 @@ enum Exporter {
             writing: try await CompositionBuilder.build(project: project, assets: assets),
             settings: settings,
             canvas: project.canvas ?? Project.defaultCanvas,
+            frameRate: project.frameRate,
             loudnessTarget: target,
             destination: destination
         )
@@ -101,7 +103,7 @@ enum Exporter {
             let reader = try AVAssetReader(asset: job.writing.composition)
             videoProvider = reader.outputProvider(for: output)
             videoReader = reader
-            let input = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings(settings, canvas: job.canvas))
+            let input = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings(settings, canvas: job.canvas, frameRate: job.frameRate))
             videoReceiver = writer.inputReceiver(for: input)
         }
 
@@ -300,9 +302,8 @@ enum Exporter {
         return codec == .hevc ? h264 * 0.65 : h264
     }
 
-    private static func videoSettings(_ settings: ExportSettings, canvas: Canvas) -> [String: Any] {
+    private static func videoSettings(_ settings: ExportSettings, canvas: Canvas, frameRate rate: Double) -> [String: Any] {
         let size = settings.pictureSize(for: canvas)
-        let rate = canvas.frameRate
         let bitRate = Double(size.width * size.height) * rate * bitsPerPixel(settings.quality, codec: settings.codec)
         return [
             AVVideoCodecKey: settings.codec == .h264 ? AVVideoCodecType.h264 : AVVideoCodecType.hevc,

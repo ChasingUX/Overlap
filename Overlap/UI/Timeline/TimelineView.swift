@@ -839,17 +839,27 @@ final class TimelineView: NSView {
         case let .gradient(gradient):
             // The view is flipped, so the angle runs clockwise from the right, as the gradient's does.
             NSGradient(starting: color(gradient.from), ending: color(gradient.to))?.draw(in: rect, angle: gradient.angle)
+        case let .mesh(mesh):
+            // One drawing at a clip's usual shape, filling the clip as a wallpaper does.
+            guard let image = MeshRenderer.image(mesh, size: CGSize(width: 192, height: 108)),
+                  let context = NSGraphicsContext.current?.cgContext else { return }
+            drawFilling(image, in: rect, context: context)
         case let .wallpaper(id):
             guard let image = snapshot.thumbnails[id], let context = NSGraphicsContext.current?.cgContext else { return }
-            let scale = max(rect.width / CGFloat(image.width), rect.height / CGFloat(image.height))
-            let size = CGSize(width: CGFloat(image.width) * scale, height: CGFloat(image.height) * scale)
-            let target = CGRect(x: rect.midX - size.width / 2, y: rect.midY - size.height / 2, width: size.width, height: size.height)
-            context.saveGState()
-            context.translateBy(x: 0, y: target.maxY)
-            context.scaleBy(x: 1, y: -1)
-            context.draw(image, in: CGRect(x: target.minX, y: 0, width: target.width, height: target.height))
-            context.restoreGState()
+            drawFilling(image, in: rect, context: context)
         }
+    }
+
+    /// Draws an image filling `rect`, cut off at its edges as needed, the right way up in this flipped view.
+    private func drawFilling(_ image: CGImage, in rect: CGRect, context: CGContext) {
+        let scale = max(rect.width / CGFloat(image.width), rect.height / CGFloat(image.height))
+        let size = CGSize(width: CGFloat(image.width) * scale, height: CGFloat(image.height) * scale)
+        let target = CGRect(x: rect.midX - size.width / 2, y: rect.midY - size.height / 2, width: size.width, height: size.height)
+        context.saveGState()
+        context.translateBy(x: 0, y: target.maxY)
+        context.scaleBy(x: 1, y: -1)
+        context.draw(image, in: CGRect(x: target.minX, y: 0, width: target.width, height: target.height))
+        context.restoreGState()
     }
 
     /// Tiles frames across the clip, each showing the moment at its own position on the timeline.

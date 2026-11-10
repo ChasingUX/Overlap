@@ -17,11 +17,11 @@ struct VideoPanel: View {
             }
         } else {
             if !store.project.hasVisualClips {
-                PlaceholderPanel(icon: .video, title: "Select a video clip",
-                                 message: "Add a video, image or title to the timeline, then select it to place it and set its look.")
+                PlaceholderPanel(title: "Select a video clip",
+                                 message: "Add a video, image or title to the timeline, then select it.")
             } else {
-                PlaceholderPanel(icon: .video, title: "Select a video clip",
-                                 message: "Look and color settings for the selected picture show up here.",
+                PlaceholderPanel(title: "Select a video clip",
+                                 message: "Select a picture on the timeline to set its look and color.",
                                  action: playheadAction)
             }
         }
@@ -37,9 +37,8 @@ struct VideoPanel: View {
         let visual = clip.visual
         return ClipPanel(title: "Video") {
             PanelGroup(title: "Look") {
+                // Corners and shadow come from the Canvas tab's frame, the same for every picture.
                 slider("Opacity", visual.opacity, range: 0...1, default: 1, format: Self.percent) { $0.opacity = $1 }
-                slider("Corners", visual.corners, range: 0...0.5, default: 0, format: { "\(Int(($0 / 0.5 * 100).rounded()))%" }) { $0.corners = $1 }
-                slider("Shadow", visual.shadow, range: 0...100, default: 0, format: { "\(Int($0.rounded()))" }) { $0.shadow = $1 }
             }
 
             // Text takes its color from the Text tab.

@@ -194,37 +194,6 @@ struct KeyboardEditingTests {
     }
 }
 
-/// The Canvas tab's shape and size.
-@MainActor
-struct CanvasSizeTests {
-    func makeStore() -> ProjectStore {
-        ProjectStore(mediaDirectory: FileManager.default.temporaryDirectory.appending(path: UUID().uuidString))
-    }
-
-    @Test func aNewShapeKeepsTheResolution() {
-        let store = makeStore()
-        store.setCanvasAspect(.wide)
-        #expect(store.project.canvas.map { [$0.width, $0.height] } == [1920, 1080])
-        store.setCanvasSize(width: 3840, height: 2160)
-        #expect(store.project.canvasAspect == .wide)
-        store.setCanvasAspect(.tall)
-        #expect(store.project.canvas.map { [$0.width, $0.height] } == [2160, 3840])
-        store.setCanvasAspect(.standard)
-        #expect(store.project.canvas.map { [$0.width, $0.height] } == [2880, 2160])
-    }
-
-    @Test func sizingAutoChoosesTheShapeItHas() {
-        let store = makeStore()
-        store.setCanvasAspect(.auto)
-        store.setCanvasSize(width: 1080, height: 1080)
-        #expect(store.project.canvasAspect == .square)
-        store.setCanvasAspect(.auto)
-        store.setCanvasSize(width: 2000, height: 1001)
-        #expect(store.project.canvasAspect == .custom)
-        #expect(store.project.canvas.map { [$0.width, $0.height] } == [2000, 1000])
-    }
-}
-
 /// Resizing the canvas from the preview: what's on it keeps its place and size.
 struct CanvasResizeTests {
     let square = Asset(id: UUID(), fileName: "s.mov", displayName: "s.mov", kind: .video, duration: Time(seconds: 5), hasAudio: false,
@@ -240,7 +209,7 @@ struct CanvasResizeTests {
     func project() -> Project {
         var project = Project()
         project.assets = [square]
-        project.canvas = Canvas(width: 1920, height: 1080, frameRate: 30)
+        project.canvas = Canvas(width: 1920, height: 1080)
         project.canvasAspect = .wide
         var clip = Clip(assetID: square.id, start: .zero, sourceStart: .zero, duration: Time(seconds: 5))
         // Against the left edge, as tall as the canvas.
@@ -276,5 +245,131 @@ struct CanvasResizeTests {
         project.resizeCanvas(to: CGRect(x: 0, y: 0, width: 1920, height: 2160))
         // Text is drawn in proportion to the canvas's height, so twice the height takes half the scale.
         #expect(abs((project.clip(title.id)?.visual.scale ?? 0) - 0.5) < 1e-9)
+    }
+}
+
+/// Selecting clips opens the tab that edits them, and clearing the selection goes back.
+@MainActor
+struct TabFollowsSelectionTests {
+    let video = Asset(id: UUID(), fileName: "v.mov", displayName: "Interview.mov", kind: .video, duration: Time(seconds: 10),
+                      hasAudio: true, pixelWidth: 1920, pixelHeight: 1080, frameRate: 30)
+    let song = Asset(id: UUID(), fileName: "s.m4a", displayName: "Theme.m4a", kind: .audio, duration: Time(seconds: 20), hasAudio: true)
+
+    func makeStore() -> (ProjectStore, video: UUID, song: UUID) {
+        let store = ProjectStore(mediaDirectory: FileManager.default.temporaryDirectory.appending(path: UUID().uuidString))
+        var videoClip = UUID()
+        var songClip = UUID()
+        store.apply("Import Media") { [video, song] project in
+            project.assets = [video, song]
+            videoClip = project.addClip(asset: video.id, at: .zero, preferredTrack: 0)?.id ?? videoClip
+            songClip = project.addClip(asset: song.id, at: Time(seconds: 30), preferredTrack: 0)?.id ?? songClip
+        }
+        return (store, videoClip, songClip)
+    }
+
+    @Test func selectingFromAProjectTabOpensTheClipsTabAndClearingGoesBack() {
+        let (store, video, song) = makeStore()
+        store.showTab(.media)
+        store.select([video])
+        #expect(store.activeTab == .video)
+        store.select([song])
+        #expect(store.activeTab == .audio)
+        store.select([])
+        #expect(store.activeTab == .media)
+    }
+
+    @Test func aTabThatEditsTheSelectionStays() {
+        let (store, video, _) = makeStore()
+        store.showTab(.audio)
+        store.select([video])
+        #expect(store.activeTab == .audio)
+    }
+
+    @Test func aTabYouPickStaysWhenTheSelectionClears() {
+        let (store, video, _) = makeStore()
+        store.select([video])
+        store.showTab(.audio)
+        store.select([])
+        #expect(store.activeTab == .audio)
+    }
+
+    @Test func deletingTheSelectionGoesBack() {
+        let (store, video, _) = makeStore()
+        store.select([video])
+        #expect(store.activeTab == .video)
+        store.deleteSelection()
+        #expect(store.activeTab == .canvas)
+    }
+}
+
+/// Choosing a background frames the pictures on it; None takes the frame away.
+struct BackgroundFrameTests {
+    @Test func theFirstBackgroundFramesThePictures() {
+        var project = Project()
+        #expect(project.frame == nil)
+        project.setBackground(BackgroundFill.gradients[0])
+        #expect(project.frame == .standard)
+    }
+
+    @Test func aChangedFrameStaysAcrossBackgrounds() {
+        var project = Project()
+        project.setBackground(BackgroundFill.gradients[0])
+        project.frame?.padding = 0.2
+        project.setBackground(BackgroundFill.colors[0])
+        #expect(project.frame?.padding == 0.2)
+    }
+
+    @Test func noneTakesTheFrameAway() {
+        var project = Project()
+        project.setBackground(BackgroundFill.gradients[0])
+        project.setBackground(nil)
+        #expect(project.frame == nil)
+        #expect(project.background == nil)
+    }
+
+    @Test func removingTheWallpaperTakesTheFrameAway() {
+        var project = Project()
+        let image = Asset(id: UUID(), fileName: "Sonoma.heic", displayName: "Sonoma.heic", kind: .image, duration: .zero,
+                          hasAudio: false, pixelWidth: 3840, pixelHeight: 2160, frameRate: nil)
+        project.assets = [image]
+        project.setBackground(.wallpaper(image.id))
+        project.removeAsset(image.id)
+        #expect(project.background == nil)
+        #expect(project.frame == nil)
+    }
+
+    @Test func aZeroFrameFromAnOlderProjectReadsAsNone() throws {
+        var project = Project()
+        project.background = .color(.white)
+        project.frame = PictureFrame()
+        let reopened = try JSONDecoder().decode(Project.self, from: JSONEncoder().encode(project))
+        #expect(reopened.frame == nil)
+        var framed = project
+        framed.frame = .standard
+        #expect(try JSONDecoder().decode(Project.self, from: JSONEncoder().encode(framed)).frame == .standard)
+    }
+
+    @Test func theFrameRateFollowsTheFirstVideoRoundedToACommonOne() {
+        var project = Project()
+        #expect(project.frameRate == 30)
+        // A screen recording's uneven rate comes out even.
+        let recording = Asset(id: UUID(), fileName: "r.mov", displayName: "r.mov", kind: .video, duration: Time(seconds: 5),
+                              hasAudio: false, pixelWidth: 1920, pixelHeight: 1080, frameRate: 58.7)
+        project.assets = [recording]
+        project.tracks[0].clips = [Clip(assetID: recording.id, start: .zero, sourceStart: .zero, duration: Time(seconds: 5))]
+        #expect(project.frameRate == 59.94)
+        project.assets[0].frameRate = 29.97002997
+        #expect(project.frameRate == 29.97)
+        project.assets[0].frameRate = 120
+        #expect(project.frameRate == 60)
+    }
+
+    @Test func cssColorsComeOutAsBrowsersShowThem() {
+        let red = RGBA(hue: 0, saturation: 100, lightness: 50)
+        #expect(red.isNear(RGBA(red: 1, green: 0, blue: 0)))
+        #expect(RGBA(hue: 120, saturation: 100, lightness: 25).isNear(RGBA(red: 0, green: 0.5, blue: 0)))
+        #expect(RGBA(hue: 240, saturation: 100, lightness: 50).isNear(RGBA(red: 0, green: 0, blue: 1)))
+        #expect(RGBA(hue: 304, saturation: 0, lightness: 100).isNear(.white))
+        #expect(RGBA(hue: 182, saturation: 100, lightness: 56).isNear(RGBA(hex: 0x1FF8FF)))
     }
 }
