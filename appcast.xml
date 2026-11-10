@@ -3,6 +3,14 @@
     <channel>
         <title>Overlap</title>
         <item>
+            <title>0.5.0</title>
+            <pubDate>Tue, 10 Nov 2026 15:34:44 -0800</pubDate>
+            <sparkle:version>19</sparkle:version>
+            <sparkle:shortVersionString>0.5.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>27.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://chasingux.github.io/Overlap/updates/Overlap-0.5.0.zip" length="2791637" type="application/octet-stream" sparkle:edSignature="HG9aA9EhdnZY9j8UFCjh+DBVspyvx+bowb9wRjvjeErOOT+sFNus/Q2U7pWDUlu/pQicJzVrDhqk3onmgQJhCg=="/>
+        </item>
+        <item>
             <title>0.4.0</title>
             <pubDate>Tue, 10 Nov 2026 14:04:17 -0800</pubDate>
             <sparkle:version>18</sparkle:version>
@@ -17,14 +25,6 @@
             <sparkle:shortVersionString>0.3.0</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>27.0</sparkle:minimumSystemVersion>
             <enclosure url="https://chasingux.github.io/Overlap/updates/Overlap-0.3.0.zip" length="2709066" type="application/octet-stream" sparkle:edSignature="BF2v1mnYWExFM/GdxGVTLNYkTEDqI671znfg0nv/c+PeIoKpUKGpsZV+6hbbZykuSzXpcRCVAwXySFGTBMRXBQ=="/>
-        </item>
-        <item>
-            <title>0.2.0</title>
-            <pubDate>Mon, 09 Nov 2026 11:02:43 -0800</pubDate>
-            <sparkle:version>15</sparkle:version>
-            <sparkle:shortVersionString>0.2.0</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>27.0</sparkle:minimumSystemVersion>
-            <enclosure url="https://chasingux.github.io/Overlap/updates/Overlap-0.2.0.zip" length="2675676" type="application/octet-stream" sparkle:edSignature="sTF0QVd2lwAhBdb0enefaebXbnhm5JocDtN0P9xwfk7pQBRrgGuSSs3gDbhgB5pgGU3KBCjIcpabedY4W8H2DQ=="/>
         </item>
     </channel>
 </rss>
