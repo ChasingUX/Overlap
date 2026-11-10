@@ -24,7 +24,8 @@ struct PreviewView: NSViewRepresentable {
         view.setStage(stage)
         view.overlay.state = TransformOverlay.State(project: store.project, selection: store.selection, handlesClip: store.handlesClip,
                                                     time: store.playback.currentTime, isCropping: store.isCropping,
-                                                    editingTitle: store.editingTitleClip)
+                                                    editingTitle: store.editingTitleClip,
+                                                    aimedZoom: store.aimedClip != nil ? store.selectedZoom : nil)
     }
 }
 

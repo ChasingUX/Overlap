@@ -6,6 +6,8 @@ struct TimelineSnapshot {
     var selection: Set<UUID>
     /// The incoming clip of the crossfade shown in the Transitions tab.
     var selectedTransition: UUID?
+    /// The zoom shown in the Zoom tab.
+    var selectedZoom: ProjectStore.ZoomSelection?
     var currentTime: Time
     var isPlaying: Bool
     var pixelsPerSecond: Double
@@ -77,6 +79,7 @@ struct TimelineRepresentable: NSViewRepresentable {
             project: store.timelineProject,
             selection: store.selection,
             selectedTransition: store.selectedTransition,
+            selectedZoom: store.selectedZoom,
             currentTime: store.playback.currentTime,
             isPlaying: store.playback.isPlaying,
             pixelsPerSecond: store.pixelsPerSecond,

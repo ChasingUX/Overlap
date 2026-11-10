@@ -705,6 +705,36 @@ enum DebugSnapshot {
                     backgroundReport["wallpaperBytes"] = (try? store.mediaURL(for: asset).resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? -1
                 }
             }
+            // OVERLAP_SNAPSHOT_ZOOM=selected or held adds a zoom to the first video clip, a second in, aimed left of
+            // the middle at 200%, as Add Zoom does. "selected" leaves it selected, the preview showing the whole picture
+            // to aim it; "held" deselects it and parks the playhead in its hold, showing the zoomed picture.
+            var zoomReport: [String: Any] = [:]
+            if let mode = environment["OVERLAP_SNAPSHOT_ZOOM"], let store = document?.store,
+               let video = store.project.tracks.flatMap(\.clips).first(where: { store.project.asset($0.assetID)?.kind == .video }) {
+                store.addZoom(to: video.id, at: video.start + Time(seconds: 1))
+                store.setZoom("Aim Zoom") { zoom in
+                    zoom.x = 0.3
+                    zoom.y = 0.6
+                    zoom.scale = 2
+                }
+                zoomReport["selected"] = store.selectedZoom != nil
+                zoomReport["tab"] = store.activeTab.title
+                zoomReport["zooms"] = store.project.clip(video.id)?.zooms.map { [$0.start, $0.duration, $0.x, $0.y, $0.scale] } ?? []
+                if mode == "held" {
+                    store.selectZoom(nil)
+                    store.playback.seek(to: video.start + Time(seconds: 2.5))
+                } else {
+                    store.playback.seek(to: video.start + Time(seconds: 2))
+                }
+                try? await Task.sleep(for: .milliseconds(900))
+                // "aim" also drags the region's middle up and left, then its corner out, as a person would.
+                if mode == "aim", let overlay = NSApplication.shared.windows.lazy.compactMap({ $0.contentView.flatMap { find(TransformOverlay.self, in: $0) } }).first {
+                    zoomReport["afterMove"] = await overlay.debugDragZoomRegion(by: CGSize(width: 60, height: -30), fromCorner: false) ?? []
+                    zoomReport["afterCorner"] = await overlay.debugDragZoomRegion(by: CGSize(width: 50, height: 28), fromCorner: true) ?? []
+                    try? await Task.sleep(for: .milliseconds(300))
+                }
+                zoomReport["unzoomedClip"] = store.playback.plan?.current.unzoomedClip != nil
+            }
             // OVERLAP_SNAPSHOT_PANEL=<tab> opens any tab with nothing selected, for its empty state.
             if let tab = environment["OVERLAP_SNAPSHOT_PANEL"].flatMap({ name in PanelTab.allCases.first { $0.title.lowercased() == name } }),
                let store = document?.store {
@@ -1096,6 +1126,7 @@ enum DebugSnapshot {
                     "pinch": pinch,
                     "tabs": tabs,
                     "background": backgroundReport,
+                    "zoom": zoomReport,
                     "fileURL": document?.fileURL?.path ?? "",
                 ]
                 let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])

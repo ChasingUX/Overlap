@@ -4,8 +4,8 @@ import Observation
 
 enum PanelTab: Int, CaseIterable, Identifiable {
     /// In the rail's order, which is also the View menu's: ⌘1 is Canvas. Transitions only shows while a crossfade
-    /// is selected, at the bottom, so nothing moves when it comes and goes.
-    case canvas = 1, video, audio, text, media, transitions
+    /// is selected and Zoom while a zoom is, at the bottom, so nothing moves when they come and go.
+    case canvas = 1, video, audio, text, media, transitions, zoom
 
     var id: Int { rawValue }
 
@@ -17,6 +17,7 @@ enum PanelTab: Int, CaseIterable, Identifiable {
         case .audio: "Audio"
         case .text: "Text"
         case .transitions: "Transitions"
+        case .zoom: "Zoom"
         }
     }
 
@@ -28,8 +29,12 @@ enum PanelTab: Int, CaseIterable, Identifiable {
         case .audio: .audio
         case .text: .text
         case .transitions: .transitions
+        case .zoom: .zoom
         }
     }
+
+    /// Tabs that show only while something of theirs is selected.
+    var isContextual: Bool { self == .transitions || self == .zoom }
 
     /// Project tabs always have content; clip tabs edit the selection.
     var isProjectTab: Bool { self == .media || self == .canvas }
@@ -145,6 +150,8 @@ final class ProjectStore {
         project.normalizeTracks()
         self.project = project
         self.mediaDirectory = mediaDirectory
+        // A zoom being aimed shows its clip whole while paused, and zoomed as it plays.
+        playback.onPlayingChange = { [weak self] _ in self?.showAimedClip() }
     }
 
     func load(_ project: Project, mediaDirectory: URL) {
@@ -227,9 +234,12 @@ final class ProjectStore {
         let clipIDs = Set(project.tracks.flatMap(\.clips).map(\.id))
         selection = selection.intersection(clipIDs)
         if selection.isEmpty { leaveSelectionTab() }
-        // A crossfade that no longer exists closes the Transitions tab.
+        // A crossfade or zoom that no longer exists closes its tab.
         if let transition = selectedTransition, project.crossfade(into: transition) == nil {
             selectTransition(nil)
+        }
+        if selectedZoom != nil, selectedZoomTarget == nil {
+            selectZoom(nil)
         }
         playback.setMasterVolume(project.masterVolume)
         rebuildPlayback()
@@ -246,8 +256,12 @@ final class ProjectStore {
             do {
                 let built = try await CompositionBuilder.build(project: project, assets: { self.avAsset(for: $0) }, options: options)
                 guard !Task.isCancelled else { return }
-                // Text being typed on the canvas stays out of the picture, which the editor draws instead.
-                built.plan?.update { $0.hiddenClip = editingTitleClip }
+                // Text being typed on the canvas stays out of the picture, which the editor draws instead, and a
+                // zoom being aimed shows its clip whole.
+                built.plan?.update {
+                    $0.hiddenClip = editingTitleClip
+                    $0.unzoomedClip = aimedClip
+                }
                 // Same clips in the same places: the player keeps its item and shows the change on its next frame.
                 if layout == installedLayout {
                     playback.refresh(with: built, mixChanged: mix != installedMix)
@@ -513,6 +527,8 @@ final class ProjectStore {
 
     /// Deletes the selected clips. Closing gaps pulls later clips on each track back.
     func deleteSelection(closingGaps: Bool = false) {
+        // A selected zoom is what Delete removes.
+        if selectedZoom != nil { return deleteSelectedZoom() }
         let ids = editableSelection
         guard !ids.isEmpty else { return }
         apply(closingGaps ? "Delete and Close Gap" : (ids.count == 1 ? "Delete Clip" : "Delete Clips")) {
@@ -616,7 +632,8 @@ final class ProjectStore {
     /// Selecting a crossfade clears the clip selection and opens the Transitions tab.
     func selectTransition(_ incoming: UUID?) {
         if let incoming {
-            previousTab = activeTab == .transitions ? previousTab : (tabBeforeSelection ?? activeTab)
+            selectZoom(nil)
+            previousTab = activeTab.isContextual ? previousTab : (tabBeforeSelection ?? activeTab)
             tabBeforeSelection = nil
             selection = []
             selectedTransition = incoming
@@ -629,6 +646,106 @@ final class ProjectStore {
     }
 
     @ObservationIgnored private var previousTab: PanelTab = .canvas
+
+    // MARK: Zooms
+
+    /// A zoom on a clip, as it's picked on the timeline.
+    struct ZoomSelection: Hashable {
+        var clip: UUID
+        var zoom: UUID
+    }
+
+    /// The zoom shown in the Zoom tab and aimed in the preview.
+    private(set) var selectedZoom: ZoomSelection?
+
+    var selectedZoomTarget: (clip: Clip, zoom: Zoom)? {
+        guard let selectedZoom, let clip = project.clip(selectedZoom.clip),
+              let zoom = clip.zooms.first(where: { $0.id == selectedZoom.zoom }) else { return nil }
+        return (clip, zoom)
+    }
+
+    /// The clip whose zoom is being aimed: drawn whole in the preview while paused, so its region can be placed.
+    var aimedClip: UUID? { playback.isPlaying ? nil : selectedZoom?.clip }
+
+    /// Selects a zoom, opening the Zoom tab as a crossfade opens Transitions; nil closes it.
+    func selectZoom(_ target: ZoomSelection?) {
+        if let target {
+            if selectedTransition != nil { selectTransition(nil) }
+            previousTab = activeTab.isContextual ? previousTab : (tabBeforeSelection ?? activeTab)
+            tabBeforeSelection = nil
+            selection = []
+            handlesClip = nil
+            selectedZoom = target
+            activeTab = .zoom
+            isPanelVisible = true
+        } else if selectedZoom != nil {
+            selectedZoom = nil
+            if activeTab == .zoom { activeTab = previousTab }
+        }
+        showAimedClip()
+    }
+
+    private func showAimedClip() {
+        let aimed = aimedClip
+        guard playback.plan?.current.unzoomedClip != aimed else { return }
+        playback.plan?.update { $0.unzoomedClip = aimed }
+        playback.redrawPicture()
+    }
+
+    /// Adds a zoom to a video or image clip where `time` falls in it, three seconds long or as long as fits before
+    /// the clip or the next zoom ends, and selects it.
+    func addZoom(to clipID: UUID, at time: Time) {
+        guard let clip = project.clip(clipID), project.isPlaceable(clip), clip.title == nil,
+              let location = project.location(ofClip: clipID), !project.tracks[location.track].isLocked else { return }
+        let sourceEnd = clip.sourceStart.seconds + clip.sourceDuration.seconds
+        var start = clip.sourceSeconds(at: Time(seconds: time.seconds.clamped(to: clip.start.seconds...clip.end.seconds)))
+        // Inside another zoom, the new one starts after it.
+        if let covering = clip.zooms.first(where: { $0.start <= start && start < $0.end }) { start = covering.end }
+        let limit = min(sourceEnd, clip.zooms.filter { $0.start > start }.map(\.start).min() ?? sourceEnd)
+        let duration = min(Zoom.defaultDuration * clip.speed, limit - start)
+        guard duration >= Zoom.shortest * clip.speed else { return NSSound.beep() }
+        let zoom = Zoom(start: start, duration: duration)
+        apply("Add Zoom") { $0.changeZooms(of: clipID) { $0.append(zoom) } }
+        selectZoom(ZoomSelection(clip: clipID, zoom: zoom.id))
+    }
+
+    /// Changes the selected zoom's region or level, as one undo step.
+    func setZoom(_ name: String, _ change: @escaping (inout Zoom) -> Void) {
+        guard let target = selectedZoom else { return }
+        apply(name) { $0.changeZoom(target.zoom, of: target.clip, change) }
+    }
+
+    /// Shows a change to the selected zoom while it's dragged.
+    func previewZoom(_ change: @escaping (inout Zoom) -> Void) {
+        guard let target = selectedZoom else { return }
+        previewLook { $0.changeZoom(target.zoom, of: target.clip, change) }
+    }
+
+    /// Moves or resizes a zoom on the timeline, as its bar was dragged to.
+    func retimeZoom(_ target: ZoomSelection, start: Double, duration: Double, name: String) {
+        apply(name) { project in
+            project.changeZoom(target.zoom, of: target.clip) { zoom in
+                zoom.start = start
+                zoom.duration = duration
+            }
+        }
+    }
+
+    func deleteSelectedZoom() {
+        guard let target = selectedZoom else { return }
+        apply("Delete Zoom") { $0.changeZooms(of: target.clip) { $0.removeAll { $0.id == target.zoom } } }
+        selectZoom(nil)
+    }
+
+    func setZoomAnimation(_ animation: ZoomAnimation) {
+        guard animation != project.zoomAnimation else { return }
+        apply("Change Zoom Animation") { $0.zoomAnimation = animation }
+    }
+
+    func setMotionBlur(_ blur: MotionBlur) {
+        guard blur != project.motionBlur else { return }
+        apply("Change Motion Blur") { $0.motionBlur = blur }
+    }
 
     func setCrossfadeCurve(_ curve: Curve) {
         guard let incoming = selectedTransition else { return }
@@ -934,7 +1051,10 @@ final class ProjectStore {
     // MARK: Selection
 
     func select(_ ids: Set<UUID>) {
-        if !ids.isEmpty { selectTransition(nil) }
+        if !ids.isEmpty {
+            selectTransition(nil)
+            selectZoom(nil)
+        }
         if handlesClip.map({ [$0] }) != ids {
             handlesClip = nil
             isCropping = false

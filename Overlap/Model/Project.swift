@@ -59,6 +59,8 @@ struct Clip: Identifiable, Hashable, Sendable, Codable {
     var crossfadeVideoStyle: VideoTransition?
     /// Keeps speech and takes out background noise, music and room echo, with Apple's voice isolation.
     var isolatesVoice = false
+    /// Zooms into parts of a video or image clip's picture, timed in its source's seconds.
+    var zooms: [Zoom] = []
 
     static let speedRange = 0.25...4.0
     /// The asset ID of text and background clips, which show what they hold instead of a file.
@@ -94,6 +96,7 @@ extension Clip {
         fill = try container.decodeIfPresent(BackgroundFill.self, forKey: .fill)
         crossfadeVideoStyle = try container.decodeIfPresent(VideoTransition.self, forKey: .crossfadeVideoStyle)
         isolatesVoice = try container.decodeIfPresent(Bool.self, forKey: .isolatesVoice) ?? false
+        zooms = try container.decodeIfPresent([Zoom].self, forKey: .zooms) ?? []
     }
 }
 
@@ -134,6 +137,9 @@ struct Project: Equatable, Sendable, Codable {
     var frame: PictureFrame?
     /// Whether exports are brought to `loudnessTarget`. Off leaves the mix as it plays.
     var normalizesLoudness = true
+    /// How every zoom in the project moves, and how much it blurs while it does.
+    var zoomAnimation = ZoomAnimation.smooth
+    var motionBlur = MotionBlur.medium
 
     /// The loudness exports are brought to, in LUFS: the level YouTube and streaming services play at.
     static let loudnessTarget = -14.0
@@ -249,6 +255,8 @@ extension Project {
         // Projects saved while the frame lived in a group of its own wrote one at zero to mean none.
         frame = try container.decodeIfPresent(PictureFrame.self, forKey: .frame).flatMap { $0 == PictureFrame() ? nil : $0 }
         normalizesLoudness = try container.decodeIfPresent(Bool.self, forKey: .normalizesLoudness) ?? true
+        zoomAnimation = try container.decodeIfPresent(ZoomAnimation.self, forKey: .zoomAnimation) ?? .smooth
+        motionBlur = try container.decodeIfPresent(MotionBlur.self, forKey: .motionBlur) ?? .medium
     }
 }
 
@@ -448,6 +456,31 @@ extension Project {
         clip.visual = visual
         place(clip, on: target)
         return clip
+    }
+
+    /// Changes a clip's zooms, keeping them in order, unless its track is locked.
+    mutating func changeZooms(of clipID: UUID, _ change: (inout [Zoom]) -> Void) {
+        guard let location = location(ofClip: clipID), !tracks[location.track].isLocked else { return }
+        change(&tracks[location.track].clips[location.clip].zooms)
+        tracks[location.track].clips[location.clip].zooms.sort { $0.start < $1.start }
+    }
+
+    /// Changes one zoom, then keeps it sensible: its level in range, its middle on the picture, at least the
+    /// shortest length, and clear of the zooms either side of it.
+    mutating func changeZoom(_ zoomID: UUID, of clipID: UUID, _ change: (inout Zoom) -> Void) {
+        changeZooms(of: clipID) { zooms in
+            guard let index = zooms.firstIndex(where: { $0.id == zoomID }) else { return }
+            var zoom = zooms[index]
+            change(&zoom)
+            zoom.scale = zoom.scale.clamped(to: Zoom.scaleRange)
+            zoom.x = zoom.x.clamped(to: 0...1)
+            zoom.y = zoom.y.clamped(to: 0...1)
+            let before = zooms.filter { $0.id != zoomID && $0.start < zoom.start }.map(\.end).max() ?? -.infinity
+            let after = zooms.filter { $0.id != zoomID && $0.start >= zooms[index].start && $0.start > zoom.start }.map(\.start).min() ?? .infinity
+            zoom.start = max(zoom.start, before)
+            zoom.duration = max(Zoom.shortest, min(zoom.duration, after - zoom.start))
+            zooms[index] = zoom
+        }
     }
 
     /// Lines text clips up with where they now sit, after they've been moved.
@@ -659,6 +692,13 @@ extension Project {
                 right.sourceStart = clip.sourceStart + Time(seconds: offset.seconds * clip.speed)
                 right.duration = clip.end - time
                 right.fadeIn = .none
+                // Each half keeps the zooms in its part; one across the cut goes to both, as a zoom of its own.
+                left.zooms = left.zoomsWithinSource()
+                right.zooms = right.zoomsWithinSource().map { zoom in
+                    var copy = zoom
+                    if left.zooms.contains(where: { $0.id == zoom.id }) { copy.id = UUID() }
+                    return copy
+                }
                 tracks[track].clips[index] = left
                 additions.append(right)
                 created.append(right.id)

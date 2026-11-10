@@ -210,7 +210,8 @@ enum CompositionBuilder {
                         clipID: clip.id, source: picture, track: trackIndex,
                         start: clip.start.seconds, end: clip.end.seconds, visual: clip.visual,
                         transitionIn: crossfades.first { $0.incoming.id == clip.id }.map(transition),
-                        transitionOut: crossfades.first { $0.outgoing.id == clip.id }.map(transition)
+                        transitionOut: crossfades.first { $0.outgoing.id == clip.id }.map(transition),
+                        zooms: clip.zooms, sourceStart: clip.sourceStart.seconds, speed: clip.speed
                     ))
                     edges.insert(clip.start)
                     edges.insert(clip.end)
@@ -248,6 +249,8 @@ enum CompositionBuilder {
                 canvas: renderSize,
                 background: project.background.flatMap { resolve($0, urls: urls) },
                 frame: project.frame ?? PictureFrame(),
+                zoomAnimation: project.zoomAnimation,
+                motionBlur: project.motionBlur,
                 layers: layers,
                 hiddenClip: nil
             ))

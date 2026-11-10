@@ -502,3 +502,62 @@ struct ProjectSoundTests {
         #expect(!project.hasSound)
     }
 }
+
+/// Zooms: where the view is over time, and how clips carry their zooms through edits.
+struct ZoomTests {
+    let zoom = Zoom(start: 2, duration: 3, x: 0.7, y: 0.3, scale: 2)
+
+    @Test func aZoomEasesInHoldsAndEasesOut() {
+        let state = { (t: Double) in ZoomPath.state(at: t, zooms: [zoom], animation: .smooth) }
+        #expect(state(1.9) == .none)
+        #expect(state(3.5) == ZoomState(x: 0.7, y: 0.3, scale: 2))
+        // Halfway in, the magnification is halfway, in steps of magnification.
+        #expect(abs(state(2.4).scale - sqrt(2)) < 0.01)
+        #expect(state(4.9).scale < 1.2)
+        #expect(state(5.1) == .none)
+    }
+
+    @Test func zoomsCloseTogetherPanAcross() {
+        let next = Zoom(start: 5.3, duration: 3, x: 0.3, y: 0.7, scale: 2)
+        let middle = ZoomPath.state(at: 5.15, zooms: [zoom, next], animation: .smooth)
+        // In the gap the view stays zoomed in, between the two regions, rather than pulling back out.
+        #expect(abs(middle.scale - 2) < 0.001)
+        #expect(middle.x < 0.7 && middle.x > 0.3)
+        // Farther apart, it pulls back out between them.
+        let far = Zoom(start: 7, duration: 3, x: 0.3, y: 0.7, scale: 2)
+        #expect(ZoomPath.state(at: 6, zooms: [zoom, far], animation: .smooth) == .none)
+    }
+
+    @Test func dynamicGoesALittlePastBeforeSettling() {
+        let peak = stride(from: 0.0, through: 1, by: 0.01).map { ZoomAnimation.dynamic.ease($0) }.max() ?? 0
+        #expect(peak > 1.03 && peak < 1.08)
+        #expect(ZoomAnimation.smooth.ease(0.5) == 0.5)
+        #expect(ZoomAnimation.dynamic.duration < ZoomAnimation.smooth.duration)
+    }
+
+    @Test func theViewStaysInsideThePicture() {
+        let edge = Zoom(start: 0, duration: 3, x: 0.05, y: 0.98, scale: 2)
+        let state = ZoomPath.state(at: 1.5, zooms: [edge], animation: .smooth)
+        #expect(state.x == 0.25 && state.y == 0.75)
+    }
+
+    @Test func splittingGivesEachHalfItsZooms() {
+        var project = Project()
+        var clip = Clip(assetID: UUID(), start: Time(seconds: 10), sourceStart: Time(seconds: 1), duration: Time(seconds: 10))
+        clip.zooms = [Zoom(start: 2, duration: 2), Zoom(start: 5, duration: 3), Zoom(start: 9, duration: 1)]
+        project.tracks[0].clips = [clip]
+        // The cut lands at source second 6, inside the middle zoom.
+        _ = project.split(at: Time(seconds: 15))
+        let halves = project.tracks[0].clips
+        #expect(halves[0].zooms.map(\.start) == [2, 5])
+        #expect(halves[1].zooms.map(\.start) == [5, 9])
+        #expect(halves[0].zooms[1].id != halves[1].zooms[0].id)
+    }
+
+    @Test func clipsSavedBeforeZoomsOpen() throws {
+        let clip = Clip(assetID: UUID(), start: .zero, sourceStart: .zero, duration: Time(seconds: 1))
+        var json = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(clip)) as? [String: Any])
+        json.removeValue(forKey: "zooms")
+        #expect(try JSONDecoder().decode(Clip.self, from: JSONSerialization.data(withJSONObject: json)).zooms.isEmpty)
+    }
+}

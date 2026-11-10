@@ -36,7 +36,7 @@ final class FrameRenderer: @unchecked Sendable {
         let backgroundLayers = plan.layers.filter { $0.isBackground && $0.isActive(at: time) }
         if let top = backgroundLayers.map(\.track).max() {
             let onTrack = backgroundLayers.filter { $0.track == top }.sorted { $0.start < $1.start }
-            if let clips = blend(onTrack, at: time, render: { self.picture(of: $0, at: time, in: canvas, frame: plan.frame, sourceFrame: sourceFrame) }) {
+            if let clips = blend(onTrack, at: time, render: { self.picture(of: $0, at: time, in: canvas, plan: plan, sourceFrame: sourceFrame) }) {
                 background = clips.composited(over: background ?? empty)
             }
         }
@@ -46,7 +46,7 @@ final class FrameRenderer: @unchecked Sendable {
         let active = plan.layers.filter { !$0.isBackground && $0.isActive(at: time) && $0.clipID != plan.hiddenClip }
         for track in Set(active.map(\.track)).sorted() {
             let onTrack = active.filter { $0.track == track }.sorted { $0.start < $1.start }
-            if let image = blend(onTrack, at: time, render: { self.picture(of: $0, at: time, in: canvas, frame: plan.frame, sourceFrame: sourceFrame) }) {
+            if let image = blend(onTrack, at: time, render: { self.picture(of: $0, at: time, in: canvas, plan: plan, sourceFrame: sourceFrame) }) {
                 picture = image.composited(over: picture)
             }
         }
@@ -82,9 +82,10 @@ final class FrameRenderer: @unchecked Sendable {
 
     /// A clip's picture placed on the canvas: cropped, color-adjusted, fitted, rounded, moved, faded and shadowed. The
     /// frame shrinks pictures and titles alike about the canvas center, and gives pictures its corners and shadow.
-    private func picture(of layer: RenderLayer, at time: Double, in canvas: CGRect, frame: PictureFrame,
+    private func picture(of layer: RenderLayer, at time: Double, in canvas: CGRect, plan: RenderPlan,
                          sourceFrame: (CMPersistentTrackID) -> CIImage?) -> CIImage? {
         let visual = layer.visual
+        let frame = plan.frame
         let isTitle = if case .title = layer.source { true } else { false }
         let corners = isTitle ? 0 : frame.corners
         let shadow = isTitle ? 0 : frame.shadow
@@ -93,6 +94,9 @@ final class FrameRenderer: @unchecked Sendable {
             return visual.opacity < 1 ? faded(image, to: visual.opacity) : image
         }
         image = atOrigin(image)
+        if !layer.zooms.isEmpty, layer.clipID != plan.unzoomedClip, !isTitle {
+            image = zoomed(image, layer: layer, at: time, plan: plan)
+        }
         if !visual.color.isNeutral {
             image = adjusted(image, visual.color)
         }
@@ -159,6 +163,61 @@ final class FrameRenderer: @unchecked Sendable {
         case let .fill(fill):
             return self.fill(fill, in: canvas)
         }
+    }
+
+    // MARK: Zooms
+
+    /// The picture as its zooms have it at `time`, in the source's own pixels, so a sharp recording stays sharp:
+    /// the region the zoom is aimed at, scaled up to fill the shown part of the picture. While the view moves it
+    /// blurs along the way it moves, as much as the plan's motion blur says.
+    private func zoomed(_ image: CIImage, layer: RenderLayer, at time: Double, plan: RenderPlan) -> CIImage {
+        let seconds = layer.sourceSeconds(at: time)
+        let state = ZoomPath.state(at: seconds, zooms: layer.zooms, animation: plan.zoomAnimation)
+        guard state.isZoomed else { return image }
+        let extent = image.extent
+        let crop = layer.visual.crop
+        let shown = CGRect(x: extent.width * crop.left, y: extent.height * crop.bottom,
+                           width: extent.width * max(0.01, 1 - crop.left - crop.right),
+                           height: extent.height * max(0.01, 1 - crop.top - crop.bottom))
+        let view = Self.region(of: state, in: shown)
+        let transform = CGAffineTransform(translationX: -view.minX, y: -view.minY)
+            .concatenating(CGAffineTransform(scaleX: state.scale, y: state.scale))
+            .concatenating(CGAffineTransform(translationX: shown.minX, y: shown.minY))
+        var result = image.transformed(by: transform).cropped(to: extent)
+
+        let strength = plan.motionBlur.strength
+        guard strength > 0 else { return result }
+        // How far the view moved over the last frame, measured as the picture shows it.
+        let step = 1.0 / 30 * layer.speed
+        let before = ZoomPath.state(at: seconds - step, zooms: layer.zooms, animation: plan.zoomAnimation)
+        let growth = abs(log(state.scale / before.scale))
+        let pan = CGVector(dx: (state.x - before.x) * shown.width * state.scale,
+                           dy: -(state.y - before.y) * shown.height * state.scale)
+        let panDistance = hypot(pan.dx, pan.dy)
+        if growth > 0.001 {
+            // Zooming in or out streaks out from the middle of the picture.
+            result = result.clampedToExtent().applyingFilter("CIZoomBlur", parameters: [
+                kCIInputCenterKey: CIVector(x: shown.midX, y: shown.midY),
+                kCIInputAmountKey: min(48, growth * shown.width * 0.25 * strength),
+            ]).cropped(to: extent)
+        }
+        if panDistance > 1 {
+            // Panning streaks along the way the view moves.
+            result = result.clampedToExtent().applyingFilter("CIMotionBlur", parameters: [
+                kCIInputRadiusKey: min(48, panDistance * 0.5 * strength),
+                kCIInputAngleKey: atan2(pan.dy, pan.dx),
+            ]).cropped(to: extent)
+        }
+        return result
+    }
+
+    /// The part of `shown` a zoom state shows, in the same pixels. Core Image's y runs up; the state's runs down.
+    static func region(of state: ZoomState, in shown: CGRect) -> CGRect {
+        let width = shown.width / state.scale
+        let height = shown.height / state.scale
+        let midX = shown.minX + state.x * shown.width
+        let midY = shown.maxY - state.y * shown.height
+        return CGRect(x: midX - width / 2, y: midY - height / 2, width: width, height: height)
     }
 
     // MARK: Effects

@@ -27,6 +27,8 @@ final class PlaybackController {
     /// Told when a rebuilt composition starts replacing the current one (true) and when it's in place (false),
     /// so the preview can hold the last frame across the swap instead of flashing.
     @ObservationIgnored var onSwap: ((Bool) -> Void)?
+    /// Hears when playing starts or stops.
+    @ObservationIgnored var onPlayingChange: ((Bool) -> Void)?
 
     /// Shared with every audio tap, so master volume changes are heard at once, boost included.
     @ObservationIgnored let masterGain = MasterGain()
@@ -57,8 +59,13 @@ final class PlaybackController {
         rateObservation = player.observe(\.rate, options: [.new]) { [weak self] _, change in
             let rate = change.newValue ?? 0
             Task { @MainActor in
-                self?.isPlaying = rate != 0
-                if rate > 0 { self?.forwardRate = rate }
+                guard let self else { return }
+                let playing = rate != 0
+                if playing != self.isPlaying {
+                    self.isPlaying = playing
+                    self.onPlayingChange?(playing)
+                }
+                if rate > 0 { self.forwardRate = rate }
             }
         }
         endObserver = NotificationCenter.default.addObserver(forName: AVPlayerItem.didPlayToEndTimeNotification, object: nil, queue: .main) { [weak self] notification in

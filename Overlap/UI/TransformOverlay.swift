@@ -21,6 +21,19 @@ final class TransformOverlay: NSView {
         var time: Time
         var isCropping: Bool
         var editingTitle: UUID?
+        /// The selected zoom, while paused: its clip shows whole, with the region it zooms into to drag.
+        var aimedZoom: ProjectStore.ZoomSelection?
+    }
+
+    /// Dragging a zoom's region: its middle moves it, a corner sizes it from the opposite corner.
+    private struct AimDrag {
+        enum Mode {
+            case move(from: CGPoint)
+            case corner(anchor: CGPoint)
+        }
+
+        var start: Zoom
+        var mode: Mode
     }
 
     private enum Drag {
@@ -52,6 +65,9 @@ final class TransformOverlay: NSView {
     /// The strip along the bottom where the divider above the controls bar is grabbed; clicks there go to it.
     private static let dividerReach: CGFloat = 6
     private var drag: Drag?
+    private var aim: AimDrag?
+    /// The zoom's region as it's being dragged to, drawn until the store catches up on release.
+    private var aimDraft: Zoom?
     /// The settings being dragged to, drawn until the store catches up on release.
     private var draft: (id: UUID, visual: Visual)?
     /// The lines the dragged picture has snapped to, in canvas points, drawn while the drag lasts.
@@ -333,6 +349,7 @@ final class TransformOverlay: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         if let canvasResize { return drawCanvasResize(canvasResize) }
+        if let aimed { return drawAim(aimed) }
         // The editor stands in for the handles while text is typed.
         guard titleEditor == nil, let clip = selectedClip else { return drawGuides() }
         let visual = visual(of: clip)
@@ -458,6 +475,8 @@ final class TransformOverlay: NSView {
         // ⌘ as the click being placed has it, which is the keyboard's when it's a person's.
         let flags = NSApplication.shared.currentEvent?.modifierFlags ?? NSEvent.modifierFlags
         if resizeEdges(at: local, flags: flags) != nil { return self }
+        // A zoom being aimed takes clicks on its region and corners.
+        if aimHit(at: local) != nil { return self }
         // With anything selected, an empty spot takes the click too, to clear the selection.
         return state?.selection.isEmpty == false || target(at: local) != nil ? self : nil
     }
@@ -841,6 +860,11 @@ final class TransformOverlay: NSView {
             beginCanvasResize(edges, at: point)
             return
         }
+        if let hit = aimHit(at: point), let aimed {
+            aim = AimDrag(start: aimed.zoom, mode: hit)
+            aimDraft = aimed.zoom
+            return
+        }
         // Double-clicking text types into it on the canvas. Double-clicking inside a picture crops it, and again
         // stops; a double-click on a handle is left to the handle.
         if event.clickCount == 2, let (clip, found) = target(at: point) {
@@ -870,6 +894,10 @@ final class TransformOverlay: NSView {
     override func mouseDragged(with event: NSEvent) {
         if canvasResize != nil {
             dragCanvas(to: convert(event.locationInWindow, from: nil), bothSides: event.modifierFlags.contains(.option))
+            return
+        }
+        if let aim {
+            dragAim(aim, to: convert(event.locationInWindow, from: nil))
             return
         }
         guard let drag, let id = draft?.id, let clip = state?.project.clip(id) else { return }
@@ -936,6 +964,19 @@ final class TransformOverlay: NSView {
     }
 
     override func mouseUp(with event: NSEvent) {
+        if aim != nil {
+            if let aimDraft, let original = aim?.start, aimDraft != original {
+                store.setZoom(aimDraft.scale == original.scale ? "Move Zoom Region" : "Resize Zoom Region") { zoom in
+                    zoom.x = aimDraft.x
+                    zoom.y = aimDraft.y
+                    zoom.scale = aimDraft.scale
+                }
+            }
+            aim = nil
+            aimDraft = nil
+            needsDisplay = true
+            return
+        }
         if let resize = canvasResize {
             canvasResize = nil
             if resize.frame != CGRect(origin: .zero, size: canvas) { store.resizeCanvas(to: resize.frame) }
@@ -959,6 +1000,81 @@ final class TransformOverlay: NSView {
         }
         let visual = draft.visual
         store.setVisual(name) { $0 = visual }
+    }
+
+    // MARK: Aiming a zoom
+
+    /// The zoom being aimed, its clip's shown picture in view points, and the region it zooms into there. Only while
+    /// its clip shows at the playhead.
+    private var aimed: (target: ProjectStore.ZoomSelection, zoom: Zoom, shown: CGRect, region: CGRect)? {
+        guard let target = state?.aimedZoom, titleEditor == nil, let clip = visibleClips.first(where: { $0.id == target.clip }),
+              let zoom = aimDraft ?? clip.zooms.first(where: { $0.id == target.zoom }),
+              let points = corners(of: clip, visual: visual(of: clip))?.map(view) else { return nil }
+        let shown = boundingBox(points)
+        return (target, zoom, shown, Self.region(of: zoom, in: shown))
+    }
+
+    /// The part of the shown picture a zoom shows, kept inside it as the zoom plays.
+    private static func region(of zoom: Zoom, in shown: CGRect) -> CGRect {
+        let state = ZoomState(x: zoom.x, y: zoom.y, scale: zoom.scale).clamped
+        let width = shown.width / state.scale
+        let height = shown.height / state.scale
+        return CGRect(x: shown.minX + state.x * shown.width - width / 2, y: shown.minY + state.y * shown.height - height / 2,
+                      width: width, height: height)
+    }
+
+    private func regionCorners(_ region: CGRect) -> [CGPoint] {
+        [CGPoint(x: region.minX, y: region.minY), CGPoint(x: region.maxX, y: region.minY),
+         CGPoint(x: region.maxX, y: region.maxY), CGPoint(x: region.minX, y: region.maxY)]
+    }
+
+    /// What a press at `point` does to the zoom being aimed: a corner sizes it from the opposite one, inside moves it.
+    private func aimHit(at point: CGPoint) -> AimDrag.Mode? {
+        guard let aimed else { return nil }
+        let corners = regionCorners(aimed.region)
+        if let corner = corners.firstIndex(where: { hypot($0.x - point.x, $0.y - point.y) <= 8 }) {
+            return .corner(anchor: corners[(corner + 2) % 4])
+        }
+        return aimed.region.contains(point) ? .move(from: point) : nil
+    }
+
+    private func dragAim(_ aim: AimDrag, to point: CGPoint) {
+        guard let shown = aimed?.shown, shown.width > 0, shown.height > 0 else { return }
+        var zoom = aim.start
+        switch aim.mode {
+        case let .move(from):
+            let start = ZoomState(x: aim.start.x, y: aim.start.y, scale: aim.start.scale).clamped
+            zoom.x = start.x + (point.x - from.x) / shown.width
+            zoom.y = start.y + (point.y - from.y) / shown.height
+        case let .corner(anchor):
+            // The region keeps the picture's shape: it reaches the pointer across or down, whichever is farther.
+            let across = max(1, abs(point.x - anchor.x))
+            let down = max(1, abs(point.y - anchor.y))
+            zoom.scale = min(shown.width / across, shown.height / down).clamped(to: Zoom.scaleRange)
+            let width = shown.width / zoom.scale
+            let height = shown.height / zoom.scale
+            zoom.x = (anchor.x + (point.x < anchor.x ? -1 : 1) * width / 2 - shown.minX) / shown.width
+            zoom.y = (anchor.y + (point.y < anchor.y ? -1 : 1) * height / 2 - shown.minY) / shown.height
+        }
+        let kept = ZoomState(x: zoom.x, y: zoom.y, scale: zoom.scale).clamped
+        zoom.x = kept.x
+        zoom.y = kept.y
+        aimDraft = zoom
+        needsDisplay = true
+    }
+
+    /// The picture whole, dimmed outside the region the zoom shows, with the region's outline and corners.
+    private func drawAim(_ aimed: (target: ProjectStore.ZoomSelection, zoom: Zoom, shown: CGRect, region: CGRect)) {
+        let outside = NSBezierPath(rect: aimed.shown)
+        outside.append(NSBezierPath(rect: aimed.region))
+        outside.windingRule = .evenOdd
+        NSColor.black.withAlphaComponent(0.45).setFill()
+        outside.fill()
+        let corners = regionCorners(aimed.region)
+        outline(corners, dashed: false)
+        for corner in corners {
+            square(at: corner)
+        }
     }
 
     // MARK: Right-click menu
@@ -985,6 +1101,9 @@ final class TransformOverlay: NSView {
             add("Edit Text", #selector(contextEditText(_:)))
         } else {
             let visual = clip.visual
+            // A zoom starts at the playhead, the moment the preview shows.
+            add("Add Zoom", #selector(contextAddZoom(_:)))
+            menu.addItem(.separator())
             add(isCropping ? "Done Cropping" : "Crop", #selector(contextCrop(_:)))
             add("Reset Crop", #selector(contextResetCrop), enabled: !visual.crop.isEmpty)
             menu.addItem(.separator())
@@ -992,6 +1111,10 @@ final class TransformOverlay: NSView {
                 enabled: visual.x != 0 || visual.y != 0 || visual.scale != 1 || visual.rotation != 0)
         }
         return menu
+    }
+
+    @objc private func contextAddZoom(_ item: NSMenuItem) {
+        if let id = item.representedObject as? UUID, let time = state?.time { store.addZoom(to: id, at: time) }
     }
 
     @objc private func contextEditText(_ item: NSMenuItem) {
@@ -1058,6 +1181,31 @@ extension TransformOverlay {
     /// being cropped after each. `midway` runs while it's being cropped.
     /// The right-click menu of the first picture showing, as lines ("Reset Crop (off)" for one that's disabled),
     /// after choosing `choosing` from it if given.
+    /// Drags the aimed zoom's region by its middle, or by its bottom-right corner, as a person would, and reports
+    /// the zoom's middle and level afterwards.
+    func debugDragZoomRegion(by offset: CGSize, fromCorner: Bool) async -> [Double]? {
+        guard let aimed, let window else { return nil }
+        let start = fromCorner ? CGPoint(x: aimed.region.maxX, y: aimed.region.maxY) : CGPoint(x: aimed.region.midX, y: aimed.region.midY)
+        let send = { (type: NSEvent.EventType, point: CGPoint) in
+            guard let event = NSEvent.mouseEvent(with: type, location: self.convert(point, to: nil), modifierFlags: [], timestamp: 0,
+                                                 windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)
+            else { return }
+            switch type {
+            case .leftMouseDown: self.mouseDown(with: event)
+            case .leftMouseDragged: self.mouseDragged(with: event)
+            default: self.mouseUp(with: event)
+            }
+        }
+        send(.leftMouseDown, start)
+        for step in 1...4 {
+            let fraction = CGFloat(step) / 4
+            send(.leftMouseDragged, CGPoint(x: start.x + offset.width * fraction, y: start.y + offset.height * fraction))
+        }
+        send(.leftMouseUp, CGPoint(x: start.x + offset.width, y: start.y + offset.height))
+        try? await Task.sleep(for: .milliseconds(200))
+        return store.selectedZoomTarget.map { [$0.zoom.x, $0.zoom.y, $0.zoom.scale] }
+    }
+
     func debugPictureMenu(choosing title: String? = nil) -> [String] {
         guard let window, let clip = visibleClips.first(where: { $0.title == nil }),
               let points = corners(of: clip, visual: clip.visual)?.map(view) else { return [] }

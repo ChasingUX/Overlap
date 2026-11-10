@@ -590,6 +590,9 @@ struct BoxSlider: View {
     /// Values the slider catches on. Nil puts one at the default when it's inside the range; a default at an end
     /// needs none, since a drag stops there anyway.
     var detents: [Double]?
+    /// For a slider of a few settings rather than a value: how many, evenly across the range. Its ticks sit on
+    /// them and a drag moves from one to the next.
+    var steps: Int?
 
     @State private var draft: Double?
     @State private var dragStart: Double?
@@ -606,9 +609,18 @@ struct BoxSlider: View {
     private var shown: Double { draft ?? value.clamped(to: range) }
 
     private var stops: [Double] {
+        if steps != nil { return [] }
         if let detents { return detents }
         guard let defaultValue, range.lowerBound < defaultValue, defaultValue < range.upperBound else { return [] }
         return [defaultValue]
+    }
+
+    /// The ticks for this slider: on its steps, or an eighth apart, lined up with its first detent.
+    private var tickFractions: [Double] {
+        if let steps, steps > 1 {
+            return (1..<(steps - 1)).map { Double($0) / Double(steps - 1) }
+        }
+        return Self.tickFractions(firstStop: stops.first.map { ($0 - range.lowerBound) / span })
     }
 
     /// Where the ticks sit, as shares of the track: an eighth apart, shifted so one falls on the first detent,
@@ -637,7 +649,7 @@ struct BoxSlider: View {
             let showsHandle = fill - 8 > titleEnd && fill - 8 < valueStart
             ZStack(alignment: .leading) {
                 ControlBox()
-                ForEach(Self.tickFractions(firstStop: stops.first.map { ($0 - range.lowerBound) / span }), id: \.self) { fraction in
+                ForEach(tickFractions, id: \.self) { fraction in
                     let x = minimum + track * CGFloat(fraction)
                     if x > max(fill + 6, titleEnd), x < valueStart {
                         Capsule()
@@ -699,6 +711,17 @@ struct BoxSlider: View {
                     }
                     dragStart = start
                     var next = (start + Double(drag.translation.width / track) * span).clamped(to: range)
+                    if let steps, steps > 1 {
+                        // A stepped slider lands on the nearest step, with a tap as it reaches a new one.
+                        let step = span / Double(steps - 1)
+                        next = range.lowerBound + ((next - range.lowerBound) / step).rounded() * step
+                        if next != shown {
+                            NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+                            draft = next
+                            onChange?(next)
+                        }
+                        return
+                    }
                     let stop = NSEvent.modifierFlags.contains(.command) ? nil
                         : Self.detent(for: next, among: stops, reach: Double(Self.detentReach / track) * span)
                     if let stop {

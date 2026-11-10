@@ -12,12 +12,16 @@ struct RailView: View {
 
     var body: some View {
         VStack(spacing: 12) {
-            ForEach(PanelTab.allCases.filter { $0 != .transitions }) { tab in
+            ForEach(PanelTab.allCases.filter { !$0.isContextual }) { tab in
                 button(for: tab)
             }
-            // Transitions joins the bottom only while a crossfade is selected, so nothing above it moves.
+            // Transitions and Zoom join the bottom only while a crossfade or zoom is selected, so nothing above moves.
             if store.selectedTransition != nil {
                 button(for: .transitions)
+                    .transition(.opacity.combined(with: .scale(scale: 0.8)))
+            }
+            if store.selectedZoom != nil {
+                button(for: .zoom)
                     .transition(.opacity.combined(with: .scale(scale: 0.8)))
             }
             Spacer()
@@ -149,6 +153,8 @@ struct PanelView: View {
             }
         case .transitions:
             TransitionPanel(store: store)
+        case .zoom:
+            ZoomPanel(store: store)
         case .text:
             TextPanel(store: store)
         }

@@ -19,7 +19,21 @@ final class TimelineView: NSView {
         static let betweenTracksZone: CGFloat = 0.25
         /// The top of the first track. Dragged clips and tracks never go above it, into the time labels.
         static let lanesTop: CGFloat = rulerHeight + trackGap
+        /// The lane of zoom bars above a track's clips, once a clip on it has a zoom: a track the length of each
+        /// picture clip, with a gap below it before the clip.
+        static let zoomLane: CGFloat = 34
+        static let zoomTrack: CGFloat = 28
+        /// The track's and its bars' corners: a bar fills the track top to bottom, so they round alike.
+        static let zoomRadius: CGFloat = 9
+        /// Corners of clips, crossfade boxes, and the small tags over clips.
+        static let clipRadius: CGFloat = 10
+        static let crossfadeRadius: CGFloat = 8
+        static let tagRadius: CGFloat = 6
+        /// How near a zoom bar's end the pointer has to be to change its length.
+        static let zoomEdgeReach: CGFloat = 6
     }
+
+    private enum ZoomEdge { case start, end }
 
     private enum Interaction {
         case none
@@ -34,6 +48,9 @@ final class TimelineView: NSView {
         case trimming(id: UUID, edge: Project.ClipEdge, grabOffset: Time, time: Time?, ripple: Bool)
         /// ⌘-dragging a box over clips to add them to the selection.
         case boxSelecting(origin: CGPoint, current: CGPoint, base: Set<UUID>)
+        /// Dragging a zoom bar: by its middle to move it, by an end to change its length. `grab` is how far into the
+        /// zoom, in source seconds, the pointer took hold.
+        case movingZoom(target: ProjectStore.ZoomSelection, clip: Clip, edge: ZoomEdge?, grab: Double, original: Zoom, downX: CGFloat)
         /// Dragging a fade handle. `duration` is the fade's new length.
         case fading(id: UUID, edge: Project.ClipEdge, startDuration: Time, downX: CGFloat, duration: Time?)
     }
@@ -64,6 +81,8 @@ final class TimelineView: NSView {
     private var scrollY: CGFloat = 0
     private var zoomAnchor: (time: Time, x: CGFloat)?
     private var interaction = Interaction.none
+    /// A zoom being dragged, drawn where it's going until the drag ends.
+    private var zoomDraft: (target: ProjectStore.ZoomSelection, zoom: Zoom)?
     private var dragPreview: DragPreview?
     /// Where the pointer was at the last step of moving a clip, for redrawing the move when ⌥ changes.
     private var movePointer: CGPoint?
@@ -138,7 +157,65 @@ final class TimelineView: NSView {
     }
 
     private func rowHeight(_ track: Track) -> CGFloat {
-        CGFloat(track.height * Layout.trackScale)
+        CGFloat(track.height * Layout.trackScale) + (hasZoomLane(track) ? Layout.zoomLane : 0)
+    }
+
+    /// Whether a track shows a lane of zoom bars above its clips: while any clip on it has a zoom in the part it plays.
+    private func hasZoomLane(_ track: Track) -> Bool {
+        track.clips.contains { !$0.zoomsWithinSource().isEmpty }
+    }
+
+    /// The zoom lane's height in a row holding `clip`: the lane, when its track has one and the row is drawn at the
+    /// track's full height, rather than floating with a dragged clip.
+    private func zoomLaneHeight(in row: CGRect, of clip: Clip) -> CGFloat {
+        guard let location = project.location(ofClip: clip.id) else { return 0 }
+        let track = project.tracks[location.track]
+        guard hasZoomLane(track), row.height >= rowHeight(track) - 0.5 else { return 0 }
+        return Layout.zoomLane
+    }
+
+    /// A clip's zooms as drawn now: the one being dragged where it's being dragged to.
+    private func zoomsShown(of clip: Clip) -> [Zoom] {
+        guard let zoomDraft, zoomDraft.target.clip == clip.id else { return clip.zooms }
+        return clip.zooms.map { $0.id == zoomDraft.target.zoom ? zoomDraft.zoom : $0 }
+    }
+
+    /// Where a clip's zooms sit in its track's lane: the part of each the clip plays.
+    private func zoomBars(of clip: Clip, in row: CGRect) -> [(zoom: Zoom, rect: CGRect)] {
+        guard zoomLaneHeight(in: row, of: clip) > 0 else { return [] }
+        return zoomBars(of: clip, inTrack: zoomTrack(of: clip, in: row))
+    }
+
+    /// A clip's zoom bars inside its zoom track, wherever that's drawn, as when the clip floats in a drag.
+    private func zoomBars(of clip: Clip, inTrack track: CGRect) -> [(zoom: Zoom, rect: CGRect)] {
+        let sourceStart = clip.sourceStart.seconds
+        let sourceEnd = sourceStart + clip.sourceDuration.seconds
+        return zoomsShown(of: clip).compactMap { zoom in
+            let start = max(zoom.start, sourceStart)
+            let end = min(zoom.end, sourceEnd)
+            guard end > start else { return nil }
+            let left = x(for: Time(seconds: clip.timelineSeconds(atSource: start)))
+            let right = x(for: Time(seconds: clip.timelineSeconds(atSource: end)))
+            return (zoom, CGRect(x: left, y: track.minY, width: max(4, right - left), height: track.height))
+        }
+    }
+
+    /// The track a picture clip's zooms sit in, as long as the clip, in its row's zoom lane.
+    private func zoomTrack(of clip: Clip, in row: CGRect) -> CGRect {
+        CGRect(x: x(for: clip.start), y: row.minY + Layout.clipInset,
+               width: max(2, CGFloat(clip.duration.seconds) * pixelsPerSecond), height: Layout.zoomTrack)
+    }
+
+    /// The zoom bar under a point, with its clip.
+    private func zoomBar(at point: CGPoint) -> (target: ProjectStore.ZoomSelection, clip: Clip, zoom: Zoom, rect: CGRect)? {
+        for row in rows where row.rect.minY <= point.y && point.y < row.rect.maxY {
+            for clip in project.tracks[row.track].clips {
+                if let bar = zoomBars(of: clip, in: row.rect).first(where: { $0.rect.insetBy(dx: -2, dy: 0).contains(point) }) {
+                    return (ProjectStore.ZoomSelection(clip: clip.id, zoom: bar.zoom.id), clip, bar.zoom, bar.rect)
+                }
+            }
+        }
+        return nil
     }
 
     private var defaultRowHeight: CGFloat {
@@ -254,11 +331,12 @@ final class TimelineView: NSView {
     }
 
     private func clipRect(_ clip: Clip, in row: CGRect) -> CGRect {
-        CGRect(
+        let lane = zoomLaneHeight(in: row, of: clip)
+        return CGRect(
             x: x(for: clip.start),
-            y: row.minY + Layout.clipInset,
+            y: row.minY + lane + Layout.clipInset,
             width: max(2, CGFloat(clip.duration.seconds) * pixelsPerSecond),
-            height: row.height - Layout.clipInset * 2
+            height: row.height - lane - Layout.clipInset * 2
         )
     }
 
@@ -525,9 +603,22 @@ final class TimelineView: NSView {
             drawLiftedTrack(moving.index, in: moving.rect)
         }
         if let dragPreview {
-            let floating = CGRect(x: 0, y: dragPreview.top, width: bounds.width, height: defaultRowHeight)
+            // A clip with zooms carries its zoom track and bars above it as it floats.
+            let clip = dragPreview.clip
+            let lane = clip.zoomsWithinSource().isEmpty ? 0 : Layout.zoomLane
+            let floating = CGRect(x: 0, y: dragPreview.top, width: bounds.width, height: defaultRowHeight + lane)
             let drag = dragCrossfades
-            drawClip(dragPreview.clip, in: clipRect(dragPreview.clip, in: floating), selected: true, label: dragPreview.label, lifted: true,
+            let box = CGRect(x: x(for: clip.start), y: floating.minY + lane + Layout.clipInset,
+                             width: max(2, CGFloat(clip.duration.seconds) * pixelsPerSecond),
+                             height: defaultRowHeight - Layout.clipInset * 2)
+            if lane > 0 {
+                let track = zoomTrack(of: clip, in: floating)
+                drawZoomTrack(in: track)
+                for (zoom, rect) in zoomBars(of: clip, inTrack: track) {
+                    drawZoomBar(zoom, in: rect, selected: false)
+                }
+            }
+            drawClip(clip, in: box, selected: true, label: dragPreview.label, lifted: true,
                      crossfades: drag?.crossfades ?? [])
             // The crossfades the drop would make, drawn on the track it would join.
             if let drag, let row = rows.first(where: { $0.track == drag.track }) {
@@ -594,7 +685,50 @@ final class TimelineView: NSView {
             let rect = clipRect(clip, in: row)
             if showsFadeHandles(clip, track: track, in: rect) { drawFadeHandles(clip, edges: fadeEdges(of: clip, crossfades: crossfades), in: rect) }
         }
+        // Every picture clip on a track with a lane gets a zoom track as long as it is, under its zoom bars.
+        for clip in clips where zoomLaneHeight(in: row, of: clip) > 0 && project.isPlaceable(clip) && clip.title == nil {
+            drawZoomTrack(in: zoomTrack(of: clip, in: row))
+        }
+        for clip in clips {
+            for (zoom, rect) in zoomBars(of: clip, in: row) {
+                let selected = snapshot.selectedZoom == ProjectStore.ZoomSelection(clip: clip.id, zoom: zoom.id)
+                drawZoomBar(zoom, in: rect, selected: selected)
+            }
+        }
         NSGraphicsContext.restoreGraphicsState()
+    }
+
+    /// A picture clip's zoom track: a dark rounded channel the zoom bars sit in.
+    private func drawZoomTrack(in rect: CGRect) {
+        let shape = NSBezierPath(roundedRect: rect, xRadius: Layout.zoomRadius, yRadius: Layout.zoomRadius)
+        Theme.zoomTrack.setFill()
+        shape.fill()
+        Theme.clipStroke.setStroke()
+        shape.lineWidth = 1
+        shape.stroke()
+    }
+
+    /// A zoom's bar, filling its track top to bottom: the accent blue with its level in white, outlined in white
+    /// when selected.
+    private func drawZoomBar(_ zoom: Zoom, in rect: CGRect, selected: Bool) {
+        let shape = NSBezierPath(roundedRect: rect, xRadius: Layout.zoomRadius, yRadius: Layout.zoomRadius)
+        NSColor.controlAccentColor.setFill()
+        shape.fill()
+        if selected {
+            Theme.clipSelectedStroke.setStroke()
+            shape.lineWidth = 1.5
+            shape.stroke()
+        }
+        let label = "Zoom \(Int((zoom.scale * 100).rounded()))%" as NSString
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 12, weight: .medium),
+            .foregroundColor: NSColor.white,
+        ]
+        let size = label.size(withAttributes: attributes)
+        // The level shows when the bar has room for it.
+        if rect.width > size.width + 12 {
+            label.draw(at: CGPoint(x: rect.midX - size.width / 2, y: rect.midY - size.height / 2), withAttributes: attributes)
+        }
     }
 
     /// The part of a clip a loop would keep, shaded in the accent color, with a bar at each end of it that falls
@@ -605,7 +739,7 @@ final class TimelineView: NSView {
         let band = CGRect(x: from, y: rect.minY, width: max(0, to - from), height: rect.height).intersection(rect)
         guard !band.isNull, band.width > 0 else { return }
         NSGraphicsContext.saveGraphicsState()
-        NSBezierPath(roundedRect: rect, xRadius: 8, yRadius: 8).addClip()
+        NSBezierPath(roundedRect: rect, xRadius: Layout.clipRadius, yRadius: Layout.clipRadius).addClip()
         NSColor.controlAccentColor.withAlphaComponent(0.28).setFill()
         band.fill()
         NSColor.controlAccentColor.setFill()
@@ -620,7 +754,7 @@ final class TimelineView: NSView {
         guard rect.maxX >= 0, rect.minX <= bounds.width else { return }
         let selected = snapshot.selectedTransition == crossfade.incoming.id
         (selected ? NSColor.controlAccentColor.withAlphaComponent(0.25) : Theme.crossfadeFill).setFill()
-        NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6).fill()
+        NSBezierPath(roundedRect: rect, xRadius: Layout.crossfadeRadius, yRadius: Layout.crossfadeRadius).fill()
 
         let area = rect.insetBy(dx: 0, dy: 6)
         let steps = max(12, Int(rect.width / 3))
@@ -638,7 +772,8 @@ final class TimelineView: NSView {
             path.stroke()
         }
 
-        let stroke = NSBezierPath(roundedRect: rect.insetBy(dx: 0.5, dy: 0.5), xRadius: 5.5, yRadius: 5.5)
+        let stroke = NSBezierPath(roundedRect: rect.insetBy(dx: 0.5, dy: 0.5), xRadius: Layout.crossfadeRadius - 0.5,
+                                  yRadius: Layout.crossfadeRadius - 0.5)
         stroke.lineWidth = selected ? 1.5 : 1
         (selected ? NSColor.controlAccentColor : Theme.crossfadeStroke).setStroke()
         stroke.stroke()
@@ -696,7 +831,7 @@ final class TimelineView: NSView {
         let x = edge == .start ? handle.x + 9 : handle.x - 9 - size.width
         let tag = CGRect(x: x - 5, y: rect.minY + 6, width: size.width + 10, height: size.height + 2)
         NSColor.black.withAlphaComponent(0.75).setFill()
-        NSBezierPath(roundedRect: tag, xRadius: 4, yRadius: 4).fill()
+        NSBezierPath(roundedRect: tag, xRadius: Layout.tagRadius, yRadius: Layout.tagRadius).fill()
         text.draw(at: CGPoint(x: x, y: tag.minY + 1), withAttributes: attributes)
     }
 
@@ -725,7 +860,7 @@ final class TimelineView: NSView {
     private func drawClip(_ clip: Clip, in rect: CGRect, selected: Bool, label: String? = nil, lifted: Bool = false, crossfades: [Crossfade] = []) {
         guard rect.maxX >= 0, rect.minX <= bounds.width else { return }
         let asset = project.asset(clip.assetID)
-        let path = NSBezierPath(roundedRect: rect, xRadius: 8, yRadius: 8)
+        let path = NSBezierPath(roundedRect: rect, xRadius: Layout.clipRadius, yRadius: Layout.clipRadius)
         // A video's detached sound draws like an audio clip.
         let isAudio = !project.showsPicture(clip)
         let top = isAudio ? Theme.audioClipTop : Theme.clipTop
@@ -793,7 +928,8 @@ final class TimelineView: NSView {
         }
         NSGraphicsContext.restoreGraphicsState()
 
-        let stroke = NSBezierPath(roundedRect: rect.insetBy(dx: 0.5, dy: 0.5), xRadius: 7.5, yRadius: 7.5)
+        let stroke = NSBezierPath(roundedRect: rect.insetBy(dx: 0.5, dy: 0.5), xRadius: Layout.clipRadius - 0.5,
+                                  yRadius: Layout.clipRadius - 0.5)
         if selected {
             Theme.clipSelectedStroke.setStroke()
             stroke.lineWidth = 1.5
@@ -920,7 +1056,7 @@ final class TimelineView: NSView {
         let labelRect = CGRect(x: visibleMinX + 6, y: rect.minY + 2, width: min(size.width, width), height: size.height)
         if overImage {
             NSColor.black.withAlphaComponent(0.5).setFill()
-            NSBezierPath(roundedRect: labelRect.insetBy(dx: -4, dy: -1), xRadius: 4, yRadius: 4).fill()
+            NSBezierPath(roundedRect: labelRect.insetBy(dx: -4, dy: -1), xRadius: Layout.tagRadius, yRadius: Layout.tagRadius).fill()
         }
         label.draw(with: labelRect, options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine], attributes: attributes)
     }
@@ -1007,6 +1143,16 @@ final class TimelineView: NSView {
             return
         }
 
+        // A zoom bar selects its zoom, and its middle or ends drag.
+        if let bar = zoomBar(at: point) {
+            store.selectZoom(bar.target)
+            let edge: ZoomEdge? = abs(point.x - bar.rect.minX) <= Layout.zoomEdgeReach ? .start
+                : abs(point.x - bar.rect.maxX) <= Layout.zoomEdgeReach ? .end : nil
+            let grab = bar.clip.sourceSeconds(at: time(atX: point.x)) - bar.zoom.start
+            interaction = .movingZoom(target: bar.target, clip: bar.clip, edge: edge, grab: grab, original: bar.zoom, downX: point.x)
+            return
+        }
+
         // Fade handles come first: they sit on a clip's top edge, inside its trim zones.
         if let (clip, edge) = fadeHandleHit(at: point) {
             if !snapshot.selection.contains(clip.id) { store.select([clip.id]) }
@@ -1062,6 +1208,10 @@ final class TimelineView: NSView {
         switch interaction {
         case .scrubbing:
             store.playback.seek(to: time(atX: point.x))
+        case let .movingZoom(target, clip, edge, grab, original, downX):
+            guard zoomDraft != nil || abs(point.x - downX) > Layout.dragThreshold, !project.isLocked(clip: clip.id) else { return }
+            zoomDraft = (target, draggedZoom(original, of: clip, edge: edge, grab: grab, toX: point.x))
+            needsDisplay = true
         case let .pressingClip(id, grabTime, grabY, downPoint):
             // Clips on locked tracks select but don't move.
             guard hypot(point.x - downPoint.x, point.y - downPoint.y) > Layout.dragThreshold, !project.isLocked(clip: id) else { return }
@@ -1118,11 +1268,21 @@ final class TimelineView: NSView {
 
     override func mouseUp(with event: NSEvent) {
         switch interaction {
+        case let .movingZoom(target, _, edge, _, original, downX):
+            if let zoomDraft, zoomDraft.zoom != original {
+                store.retimeZoom(target, start: zoomDraft.zoom.start, duration: zoomDraft.zoom.duration,
+                                 name: edge == nil ? "Move Zoom" : "Change Zoom Length")
+            } else {
+                // A click parks the playhead there, so the preview shows that moment of the zoom.
+                store.playback.seek(to: time(atX: downX))
+            }
+            zoomDraft = nil
         case let .pressingClip(_, _, _, downPoint):
             store.playback.seek(to: time(atX: downPoint.x))
         case let .pressingEmptySpace(_, _, downPoint):
             store.select([])
             store.selectTransition(nil)
+            store.selectZoom(nil)
             store.playback.seek(to: time(atX: downPoint.x))
         case let .movingClip(id, _, _, _, _):
             if let dragPreview {
@@ -1180,7 +1340,10 @@ final class TimelineView: NSView {
             hoveredClip = hovered
             needsDisplay = true
         }
-        let resizes = fadeHandleHit(at: point) != nil || (crossfade(at: point) == nil && trimEdge(at: point) != nil)
+        let zoomEnd = zoomBar(at: point).map { bar in
+            abs(point.x - bar.rect.minX) <= Layout.zoomEdgeReach || abs(point.x - bar.rect.maxX) <= Layout.zoomEdgeReach
+        } ?? false
+        let resizes = zoomEnd || fadeHandleHit(at: point) != nil || (crossfade(at: point) == nil && trimEdge(at: point) != nil)
         (resizes ? NSCursor.resizeLeftRight : NSCursor.arrow).set()
     }
 
@@ -1212,6 +1375,13 @@ final class TimelineView: NSView {
             menu.addItem(.separator())
         } else if let clip = track.clips.first(where: { clipRect($0, in: row.rect).contains(point) }) {
             if !snapshot.selection.contains(clip.id) { store.select([clip.id]) }
+            // Video and image clips take zooms, starting where the click was.
+            if project.isPlaceable(clip), clip.title == nil, !track.isLocked {
+                let add = menuItem("Add Zoom", #selector(contextAddZoom(_:)))
+                add.representedObject = ZoomRequest(clip: clip.id, time: time(atX: point.x))
+                menu.addItem(add)
+                menu.addItem(.separator())
+            }
             menu.addItem(menuItem("Split at Playhead", #selector(contextSplit), key: "b"))
             if store.canDetachAudio {
                 menu.addItem(menuItem("Detach Audio", #selector(contextDetachAudio), key: "s", modifiers: [.control, .shift]))
@@ -1272,6 +1442,34 @@ final class TimelineView: NSView {
     private static let deleteKey = String(Character(UnicodeScalar(UInt8(NSBackspaceCharacter))))
 
     @objc private func contextSplit() { store.splitAtPlayhead() }
+    @objc private func contextAddZoom(_ item: NSMenuItem) {
+        guard let request = item.representedObject as? ZoomRequest else { return }
+        store.addZoom(to: request.clip, at: request.time)
+    }
+
+    /// Where a zoom bar's drag takes the zoom: moved by its middle, or one end moved, in the clip's source seconds.
+    /// It keeps at least the shortest length and stays clear of the zooms either side, and of the part of the
+    /// source the clip plays unless it already reached past it.
+    private func draggedZoom(_ original: Zoom, of clip: Clip, edge: ZoomEdge?, grab: Double, toX x: CGFloat) -> Zoom {
+        let source = clip.sourceSeconds(at: time(atX: x))
+        let others = clip.zooms.filter { $0.id != original.id }
+        let floor = max(others.filter { $0.end <= original.start + 1e-9 }.map(\.end).max() ?? -.infinity,
+                        min(clip.sourceStart.seconds, original.start))
+        let ceiling = min(others.filter { $0.start >= original.end - 1e-9 }.map(\.start).min() ?? .infinity,
+                          max(clip.sourceStart.seconds + clip.sourceDuration.seconds, original.end))
+        let shortest = Zoom.shortest * clip.speed
+        var zoom = original
+        switch edge {
+        case .start:
+            zoom.start = min(max(source, floor), original.end - shortest)
+            zoom.duration = original.end - zoom.start
+        case .end:
+            zoom.duration = max(min(source, ceiling), original.start + shortest) - original.start
+        case nil:
+            zoom.start = min(max(source - grab, floor), ceiling - original.duration)
+        }
+        return zoom
+    }
     @objc private func contextDetachAudio() { store.detachAudio() }
     @objc private func contextDelete() { store.deleteSelection() }
     @objc private func contextRippleDelete() { store.deleteSelection(closingGaps: true) }
@@ -1521,7 +1719,7 @@ extension TimelineView {
     }
 
     enum DebugDrag: String {
-        case clip, clipAbove, clipBelow, track, scrub, scrolled, trim, fade, overlap
+        case clip, clipAbove, clipBelow, track, scrub, scrolled, trim, fade, overlap, zoomed
     }
 
     /// Where the clip being dragged would land: on its own track, another track, or a new one, and how many crossfades it would make.
@@ -1566,6 +1764,13 @@ extension TimelineView {
             scrollX = CGFloat(3.3) * pixelsPerSecond
             needsDisplay = true
             return
+        case .zoomed:
+            // Drag the first clip with zooms 160 points right and a little down, along its own track.
+            guard let row = rows.first(where: { row in project.tracks[row.track].clips.contains { !$0.zooms.isEmpty } }),
+                  let clip = project.tracks[row.track].clips.first(where: { !$0.zooms.isEmpty }) else { return }
+            let rect = clipRect(clip, in: row.rect)
+            start = CGPoint(x: rect.minX + 40, y: rect.midY)
+            end = CGPoint(x: rect.minX + 200, y: rect.midY + 10)
         case .scrub:
             // Press on empty space below the tracks and drag sideways; the playhead should end at 10 seconds.
             let y = (rows.last?.rect.maxY ?? Layout.lanesTop) + 30
@@ -1643,3 +1848,14 @@ extension TimelineView {
     }
 }
 #endif
+
+/// What Add Zoom in a clip's menu adds to: the clip, at the time the menu was opened over.
+private final class ZoomRequest: NSObject {
+    let clip: UUID
+    let time: Time
+
+    init(clip: UUID, time: Time) {
+        self.clip = clip
+        self.time = time
+    }
+}

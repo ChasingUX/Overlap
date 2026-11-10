@@ -206,6 +206,42 @@ struct PictureTests {
         #expect(try pixel(rendered, x: 0.05, y: 0.1).isClose(to: .black))
     }
 
+    /// An image red on its left half and blue on its right.
+    func makeHalvesImage(width: Int = 320, height: Int = 180) throws -> URL {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appending(path: "\(UUID().uuidString).png")
+        let context = try #require(CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+                                             space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.setFillColor(CGColor(srgbRed: 1, green: 0, blue: 0, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: width / 2, height: height))
+        context.setFillColor(CGColor(srgbRed: 0, green: 0, blue: 1, alpha: 1))
+        context.fill(CGRect(x: width / 2, y: 0, width: width - width / 2, height: height))
+        let image = try #require(context.makeImage())
+        let destination = try #require(CGImageDestinationCreateWithURL(url as CFURL, UTType.png.identifier as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, image, nil)
+        #expect(CGImageDestinationFinalize(destination))
+        return url
+    }
+
+    @Test func aZoomFillsThePictureWithItsRegion() async throws {
+        let url = try makeHalvesImage()
+        let image = asset(url, kind: .image)
+        var project = Project()
+        project.assets = [image]
+        project.motionBlur = .off
+        var still = clip(image, length: 4)
+        // Aimed at the middle of the blue half, at twice the size: the blue half fills the picture.
+        still.zooms = [Zoom(start: 0, duration: 4, x: 0.75, y: 0.5, scale: 2)]
+        project.tracks[0].clips = [still]
+        let held = try await frame(of: project, urls: [image.id: url], at: 2)
+        #expect(try pixel(held, x: 0.1, y: 0.5).isClose(to: Self.blue))
+        #expect(try pixel(held, x: 0.9, y: 0.5).isClose(to: Self.blue))
+        // Before it eases in, the left half is still red.
+        let start = try await frame(of: project, urls: [image.id: url], at: 0)
+        #expect(try pixel(start, x: 0.1, y: 0.5).isClose(to: Self.red))
+    }
+
     @Test func aTitleShadowDarkensBelowTheText() async throws {
         var project = Project()
         project.background = .color(.white)

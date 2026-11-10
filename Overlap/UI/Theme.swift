@@ -53,6 +53,8 @@ enum Theme {
     /// A slider's fill brightens toward its handle, from just above the box to a step past `controlFill`.
     static let controlFillStart = gray(0x27)
     static let controlFillEnd = gray(0x33)
+    /// The channel a clip's zoom bars sit in, above it on the timeline.
+    static let zoomTrack = gray(0x1C)
     /// The rail's tooltips, a step lighter than the chrome they float over.
     static let tooltip = gray(0x2A)
     /// Native sliders are tinted gray instead of the accent blue.

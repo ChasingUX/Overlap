@@ -99,7 +99,8 @@ enum MainMenu {
 
     private static func viewMenu() -> NSMenu {
         let menu = NSMenu(title: "View")
-        for tab in PanelTab.allCases {
+        // The Zoom tab opens with a zoom; a menu item for it would sit confusingly beside Zoom In and Zoom Out.
+        for tab in PanelTab.allCases where tab != .zoom {
             menu.addItem(item(tab.title, #selector(ProjectDocument.showPanelTab(_:)), "\(tab.rawValue)", tag: tab.rawValue))
         }
         menu.addItem(.separator())

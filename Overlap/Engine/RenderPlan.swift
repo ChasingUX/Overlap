@@ -41,6 +41,10 @@ struct RenderLayer: Sendable, Equatable {
     var visual: Visual
     var transitionIn: PictureTransition?
     var transitionOut: PictureTransition?
+    /// The clip's zooms, and what it needs to find the source moment its zooms are timed in.
+    var zooms: [Zoom] = []
+    var sourceStart = 0.0
+    var speed = 1.0
 
     var isBackground: Bool {
         if case .fill = source { true } else { false }
@@ -48,6 +52,11 @@ struct RenderLayer: Sendable, Equatable {
 
     func isActive(at time: Double) -> Bool {
         time >= start && time < end
+    }
+
+    /// The source's seconds at a composition time.
+    func sourceSeconds(at time: Double) -> Double {
+        sourceStart + (time - start) * speed
     }
 }
 
@@ -57,6 +66,10 @@ struct RenderPlan: Sendable, Equatable {
     var canvas: CGSize
     var background: ResolvedFill?
     var frame = PictureFrame()
+    var zoomAnimation = ZoomAnimation.smooth
+    var motionBlur = MotionBlur.medium
+    /// A clip drawn without its zooms, while one of them is aimed in the preview.
+    var unzoomedClip: UUID?
     var layers: [RenderLayer]
     /// A clip left out of the picture for now: text being typed into on the canvas, which the editor draws instead.
     var hiddenClip: UUID?
@@ -66,9 +79,12 @@ struct RenderPlan: Sendable, Equatable {
     mutating func takeLook(from project: Project, resolve: (BackgroundFill) -> ResolvedFill?) {
         background = project.background.flatMap(resolve)
         frame = project.frame ?? PictureFrame()
+        zoomAnimation = project.zoomAnimation
+        motionBlur = project.motionBlur
         for index in layers.indices {
             guard let clip = project.clip(layers[index].clipID) else { continue }
             layers[index].visual = clip.visual
+            layers[index].zooms = clip.zooms
             if let title = clip.title {
                 layers[index].source = .title(title)
             } else if let fill = clip.fill, let resolved = resolve(fill) {

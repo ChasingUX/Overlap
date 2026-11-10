@@ -11,6 +11,7 @@ enum AppIcon {
     case audio
     case text
     case transitions
+    case zoom
     case importMedia
     case play
     case pause
@@ -30,6 +31,7 @@ enum AppIcon {
         case .audio: "waveform"
         case .text: "textformat"
         case .transitions: "square.on.square.dashed"
+        case .zoom: "plus.magnifyingglass"
         case .importMedia: "plus"
         case .play: "play.fill"
         case .pause: "pause.fill"

@@ -18,6 +18,9 @@ for the one-time step macOS asks for. After that, Overlap updates itself.
   video's frame rate. A background of a mesh gradient, a color, your own image or one of the Mac's aerial wallpapers,
   which frames the picture with padding, a shadow and rounded corners. Each picture can be moved, scaled, rotated,
   cropped and color-adjusted.
+- **Zooms:** right-click a video or image clip and choose Add Zoom. Zooms sit in a lane above the clip's track; drag a
+  zoom's region in the preview, set its level, and choose Smooth or Dynamic easing and how much motion blur. Zooms
+  close together pan from one region to the next, and recordings stay sharp because zooms use the source's pixels.
 - **Titles:** ready-made styles (centered, lower third, caption, intro, end card, callout), typed, placed and sized
   on the canvas, with a shadow or plate to read over the picture, animations in and out, and one look for all.
 - **Sound:** per-clip volume, Isolate voice to take out background noise, and a master volume. Exports can be
