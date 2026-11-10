@@ -109,6 +109,18 @@ private struct RailTooltip: View {
     }
 }
 
+/// The icon at the top of an empty state, large and gray.
+struct EmptyStateIcon: View {
+    let icon: AppIcon
+
+    var body: some View {
+        icon.image
+            .font(.system(size: 26))
+            .foregroundStyle(.secondary)
+            .padding(.bottom, 2)
+    }
+}
+
 /// Eases a button back a little while it's pressed, matching the playback buttons.
 struct PressScaleButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
@@ -164,29 +176,34 @@ struct ClipPanel<Content: View>: View {
     }
 }
 
-/// What a tab shows with nothing to work on: a title and a line or two saying what to do, without an icon.
+/// What a tab shows with nothing to work on, in the middle of the panel: the tab's icon, a title and a line or two
+/// saying what to do, wrapped into even lines.
 struct PlaceholderPanel: View {
+    let icon: AppIcon
     let title: String
     let message: String
     var action: (title: String, perform: () -> Void)?
 
     var body: some View {
         VStack(spacing: 8) {
+            EmptyStateIcon(icon: icon)
             Text(title)
                 .font(PanelMetrics.emptyTitleFont)
                 .multilineTextAlignment(.center)
-            Text(message)
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
+            BalancedText {
+                Text(message)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+            // A button as Media's empty state has.
             if let action {
                 Button(action.title, action: action.perform)
-                    .buttonStyle(BoxButtonStyle())
-                    .padding(.top, 8)
+                    .padding(.top, 6)
             }
         }
         .padding(24)
-        .padding(.top, 48)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        // In the middle of the panel.
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }

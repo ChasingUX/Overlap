@@ -18,8 +18,8 @@ for the one-time step macOS asks for. After that, Overlap updates itself.
   video's frame rate. A background of a mesh gradient, a color, your own image or one of the Mac's aerial wallpapers,
   which frames the picture with padding, a shadow and rounded corners. Each picture can be moved, scaled, rotated,
   cropped and color-adjusted.
-- **Titles:** ready-made styles (centered title, lower third, caption, bold intro), edited on the canvas, with
-  animations in and out.
+- **Titles:** ready-made styles (centered, lower third, caption, intro, end card, callout), typed, placed and sized
+  on the canvas, with a shadow or plate to read over the picture, animations in and out, and one look for all.
 - **Sound:** per-clip volume, Isolate voice to take out background noise, and a master volume. Exports can be
   brought to the loudness streaming services play at.
 - **Loops:** finds where a video repeats, or the best places it can loop, and trims a clip to a loop.

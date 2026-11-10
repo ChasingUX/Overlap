@@ -1138,7 +1138,9 @@ extension TransformOverlay {
             "editorFocused": titleEditor.map { window.firstResponder === $0.textView } ?? false,
             "renderedTextHidden": store.playback.plan?.current.hiddenClip == clip.id,
         ]
-        titleEditor?.textView.insertText(text, replacementRange: titleEditor?.textView.selectedRange() ?? NSRange())
+        if !text.isEmpty {
+            titleEditor?.textView.insertText(text, replacementRange: titleEditor?.textView.selectedRange() ?? NSRange())
+        }
         try? await Task.sleep(for: .milliseconds(200))
         midway()
         if cancel {

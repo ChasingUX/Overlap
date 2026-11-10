@@ -193,7 +193,6 @@ struct Project: Equatable, Sendable, Codable {
         showsPicture(clip) && clip.fill == nil
     }
 
-    /// Whether a clip plays sound: any clip with audio, unless its sound was split off.
     /// Takes media whose sound turned out to be silence as having none, so its clips show no sound and the
     /// sound controls leave them be. Learned when the waveform is read, not saved as an edit.
     mutating func treatAsSilent(_ ids: Set<UUID>) {
@@ -202,8 +201,14 @@ struct Project: Equatable, Sendable, Codable {
         }
     }
 
+    /// Whether a clip plays sound: any clip with audio, unless its sound was split off.
     func playsSound(_ clip: Clip) -> Bool {
         asset(clip.assetID)?.hasAudio == true && clip.usesAudio
+    }
+
+    /// Whether anything on the timeline plays sound, so there's a mix to set the volume of.
+    var hasSound: Bool {
+        tracks.contains { $0.clips.contains(where: playsSound) }
     }
 
     /// Whether a track is heard and seen: not muted, and not left out by another track's solo.
@@ -439,9 +444,19 @@ extension Project {
         if canvas == nil { canvas = Self.defaultCanvas }
         var clip = Clip(assetID: Clip.noAsset, start: max(.zero, start), sourceStart: .zero, duration: Clip.stillDuration)
         clip.title = title
+        clip.title?.alignment = TitleAlignment(position: visual.x)
         clip.visual = visual
         place(clip, on: target)
         return clip
+    }
+
+    /// Lines text clips up with where they now sit, after they've been moved.
+    mutating func realignTitles(_ ids: Set<UUID>) {
+        for id in ids {
+            guard let clip = clip(id), clip.title != nil else { continue }
+            let alignment = TitleAlignment(position: clip.visual.x)
+            changeTitle(of: [id]) { $0.alignment = alignment }
+        }
     }
 
     /// Adds a background clip, five seconds long.

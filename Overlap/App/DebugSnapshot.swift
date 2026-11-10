@@ -377,11 +377,12 @@ enum DebugSnapshot {
             }
 
             // OVERLAP_SNAPSHOT_TEXTEDIT=commit or cancel double-clicks the first text showing, types into it on the
-            // canvas, captures the window midway as `<prefix>-editing.png`, then applies or cancels.
+            // canvas, captures the window midway as `<prefix>-editing.png`, then applies or cancels. "select" captures
+            // it with its text still selected, as editing starts, then cancels.
             var textEditReport: [String: Any] = [:]
             if let mode = environment["OVERLAP_SNAPSHOT_TEXTEDIT"],
                let overlay = NSApplication.shared.windows.lazy.compactMap({ $0.contentView.flatMap { find(TransformOverlay.self, in: $0) } }).first {
-                textEditReport = await overlay.debugEditTitle(typing: "Typed on the canvas", cancel: mode == "cancel") {
+                textEditReport = await overlay.debugEditTitle(typing: mode == "select" ? "" : "Typed on the canvas", cancel: mode != "commit") {
                     if let window = overlay.window, let view = window.contentView?.superview,
                        let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
                         view.cacheDisplay(in: view.bounds, to: bitmap)

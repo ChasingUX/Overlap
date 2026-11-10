@@ -373,3 +373,132 @@ struct BackgroundFrameTests {
         #expect(RGBA(hue: 182, saturation: 100, lightness: 56).isNear(RGBA(hex: 0x1FF8FF)))
     }
 }
+
+/// The Text tab's title look: readability, copying a look to every title, older titles, and new titles opening to type.
+@MainActor
+struct TitleLookTests {
+    func makeStore() -> ProjectStore {
+        ProjectStore(mediaDirectory: FileManager.default.temporaryDirectory.appending(path: UUID().uuidString))
+    }
+
+    @Test func readabilityIsOneChoice() {
+        var title = Title(text: "Hi")
+        #expect(title.readability == .none)
+        title.readability = .shadow
+        #expect(title.shadow && title.backdrop == nil)
+        title.readability = .plate
+        #expect(!title.shadow && title.backdrop == Title.plate)
+        // A plate keeps its color while it stays a plate.
+        title.backdrop = .white
+        title.readability = .plate
+        #expect(title.backdrop == .white)
+        title.readability = .none
+        #expect(!title.shadow && title.backdrop == nil)
+    }
+
+    @Test func aLookCopiesItsFontColorReadabilityAndAnimationOnly() {
+        let source = Title(text: "Source", fontFamily: TitleFont.serif, size: 120, weight: .heavy, color: RGBA(hex: 0xECB851),
+                           alignment: .trailing, animationIn: .pop, animationOut: .slide, shadow: true)
+        var other = Title(text: "Other", size: 40, alignment: .leading, backdrop: .white)
+        other.takeLook(of: source)
+        #expect(other.fontFamily == TitleFont.serif && other.weight == .heavy && other.color == source.color)
+        #expect(other.readability == .shadow)
+        #expect(other.animationIn == .pop && other.animationOut == .slide)
+        #expect(other.text == "Other" && other.size == 40 && other.alignment == .leading)
+    }
+
+    @Test func titlesSavedBeforeShadowsOpen() throws {
+        var json = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(Title(text: "Old"))) as? [String: Any])
+        json.removeValue(forKey: "shadow")
+        let title = try JSONDecoder().decode(Title.self, from: JSONSerialization.data(withJSONObject: json))
+        #expect(title.text == "Old" && !title.shadow)
+    }
+
+    @Test func useForAllTitlesChangesTheOthers() {
+        let store = makeStore()
+        store.addTitleAtPlayhead(.centeredTitle)
+        store.endEditingTitle(text: nil)
+        store.addTitleAtPlayhead(.callout)
+        store.endEditingTitle(text: nil)
+        #expect(store.otherTitleCount == 1)
+        store.setTitle("Change Font") { $0.fontFamily = TitleFont.mono }
+        store.useLookForAllTitles()
+        let titles = store.project.tracks.flatMap(\.clips).compactMap(\.title)
+        #expect(titles.count == 2)
+        #expect(titles.allSatisfy { $0.fontFamily == TitleFont.mono && $0.readability == .plate })
+        #expect(Set(titles.map(\.text)) == ["Title", "Callout"])
+    }
+
+    @Test func aNewTitleOpensReadyToType() {
+        let store = makeStore()
+        store.addTitleAtPlayhead(.lowerThird)
+        let id = try? #require(store.selection.first)
+        #expect(store.editingTitleClip == id)
+        store.endEditingTitle(text: "Jesse · Design")
+        #expect(store.editingTitleClip == nil)
+        #expect(store.project.tracks.flatMap(\.clips).compactMap(\.title).first?.text == "Jesse · Design")
+    }
+
+    @Test func alignmentFollowsWhereTheTitleSits() {
+        #expect(TitleAlignment(position: -0.38) == .leading)
+        #expect(TitleAlignment(position: 0.1) == .center)
+        #expect(TitleAlignment(position: 0.33) == .trailing)
+        let store = makeStore()
+        for (style, alignment) in [(TitleStyle.lowerThird, TitleAlignment.leading), (.centeredTitle, .center), (.callout, .trailing)] {
+            store.addTitleAtPlayhead(style)
+            store.endEditingTitle(text: nil)
+            #expect(store.selectedClips.first?.title?.alignment == alignment)
+        }
+        // Moving the callout into the left third lines it up on the left.
+        store.setVisual("Move") { $0.x = -0.3 }
+        #expect(store.selectedClips.first?.title?.alignment == .leading)
+    }
+
+    @Test func aTitleOnTheLeftKeepsItsLeftEdgeAsItsTextGrows() throws {
+        let store = makeStore()
+        store.addTitleAtPlayhead(.lowerThird)
+        let canvas = try #require(store.project.canvas)
+        let size = CGSize(width: canvas.width, height: canvas.height)
+        func leftEdge() throws -> Double {
+            let clip = try #require(store.selectedClips.first)
+            let title = try #require(clip.title)
+            let image = try #require(TitleRenderer.image(for: title, canvas: size))
+            return clip.visual.x * size.width - Double(image.width) / 2 * clip.visual.scale
+        }
+        let before = try leftEdge()
+        store.endEditingTitle(text: "Someone with a much longer name\nRole")
+        #expect(abs(try leftEdge() - before) < 1)
+        // A centered title keeps its middle instead.
+        store.addTitleAtPlayhead(.centeredTitle)
+        store.endEditingTitle(text: "A much longer title than before")
+        #expect(store.selectedClips.first?.visual.x == 0)
+    }
+
+    @Test func theSystemDesignsAreTheirOwnFonts() {
+        let system = TitleRenderer.font(for: Title(text: "A"), size: 40)
+        for family in [TitleFont.rounded, TitleFont.serif, TitleFont.mono] {
+            #expect(TitleRenderer.font(for: Title(text: "A", fontFamily: family), size: 40).fontName != system.fontName)
+        }
+        #expect(TitleFont.name(of: TitleFont.serif) == "New York")
+        #expect(TitleFont.name(of: "") == "System")
+    }
+}
+
+/// The Audio tab shows the mix's controls only when something on the timeline plays sound.
+struct ProjectSoundTests {
+    @Test func onlyClipsThatPlaySoundCount() {
+        var project = Project()
+        #expect(!project.hasSound)
+        let song = Asset(id: UUID(), fileName: "s.m4a", displayName: "s.m4a", kind: .audio, duration: Time(seconds: 5), hasAudio: true)
+        let silent = Asset(id: UUID(), fileName: "v.mov", displayName: "v.mov", kind: .video, duration: Time(seconds: 5), hasAudio: false,
+                           pixelWidth: 1920, pixelHeight: 1080, frameRate: 30)
+        project.assets = [song, silent]
+        project.tracks[0].clips = [Clip(assetID: silent.id, start: .zero, sourceStart: .zero, duration: Time(seconds: 5))]
+        #expect(!project.hasSound)
+        project.tracks[1].clips = [Clip(assetID: song.id, start: .zero, sourceStart: .zero, duration: Time(seconds: 5))]
+        #expect(project.hasSound)
+        // A song merely imported, not on the timeline, has nothing to mix.
+        project.tracks[1].clips = []
+        #expect(!project.hasSound)
+    }
+}

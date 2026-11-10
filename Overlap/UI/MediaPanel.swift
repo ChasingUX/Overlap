@@ -65,20 +65,24 @@ struct MediaPanel: View {
 
     private var emptyState: some View {
         VStack(spacing: 8) {
+            EmptyStateIcon(icon: .media)
             Text("Import video and audio")
                 .font(PanelMetrics.emptyTitleFont)
-            Text("Drag files here or onto the timeline, or choose Import.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
+            BalancedText {
+                Text("Drag files here or onto the timeline, or choose Import.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
             Button("Import Media…") {
                 store.presentImportPanel()
             }
             .padding(.top, 6)
         }
         .padding(24)
-        .padding(.top, 24)
-        .frame(maxWidth: .infinity)
+        // In the middle of the whole panel, as other tabs' empty states are, not just of the space under the top row.
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.bottom, PanelMetrics.topRowHeight + PanelMetrics.topRowInset * 2)
     }
 }
 

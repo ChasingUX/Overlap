@@ -206,6 +206,26 @@ struct PictureTests {
         #expect(try pixel(rendered, x: 0.05, y: 0.1).isClose(to: .black))
     }
 
+    @Test func aTitleShadowDarkensBelowTheText() async throws {
+        var project = Project()
+        project.background = .color(.white)
+        var title = Title(text: "██████", size: 60, color: .white, animationIn: .none, animationOut: .none)
+        project.addTitle(title, at: .zero, target: .existing(project.tracks[0].id))
+        let plain = try await frame(of: project, urls: [:], at: 1)
+        title.shadow = true
+        project.changeTitle(of: Set(project.tracks.flatMap(\.clips).map(\.id))) { $0 = title }
+        let shadowed = try await frame(of: project, urls: [:], at: 1)
+        // White text on white: without a shadow the column through the text stays white; with one, somewhere
+        // around the letters it darkens.
+        func darkest(_ image: CGImage) throws -> Double {
+            try stride(from: 0.35, through: 0.65, by: 0.005).map { try pixel(image, x: 0.5, y: $0).red }.min() ?? 1
+        }
+        let plainDarkest = try darkest(plain)
+        let shadowDarkest = try darkest(shadowed)
+        #expect(plainDarkest > 0.97, "plain \(plainDarkest)")
+        #expect(shadowDarkest < plainDarkest - 0.05, "shadowed \(shadowDarkest)")
+    }
+
     @Test func shadowShowsOnADarkBackground() async throws {
         let url = try makeImage(Self.red, width: 320, height: 180)
         let image = asset(url, kind: .image)

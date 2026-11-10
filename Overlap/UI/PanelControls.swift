@@ -61,6 +61,38 @@ struct PanelLabel: View {
     }
 }
 
+/// Wraps text at the narrowest width that keeps it on as many lines as it takes at full width, so its lines come
+/// out about even rather than a full line and a word or two, as CSS's balanced wrapping does.
+struct BalancedText: Layout {
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard let text = subviews.first else { return .zero }
+        guard let width = proposal.width, width.isFinite, width > 0 else { return text.sizeThatFits(proposal) }
+        return text.sizeThatFits(ProposedViewSize(width: balancedWidth(of: text, within: width), height: nil))
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard let text = subviews.first else { return }
+        let width = balancedWidth(of: text, within: bounds.width)
+        text.place(at: CGPoint(x: bounds.midX, y: bounds.midY), anchor: .center, proposal: ProposedViewSize(width: width, height: nil))
+    }
+
+    /// The narrowest width, to a point, that doesn't add a line.
+    private func balancedWidth(of text: LayoutSubview, within width: CGFloat) -> CGFloat {
+        let height = text.sizeThatFits(ProposedViewSize(width: width, height: nil)).height
+        var narrow: CGFloat = 1
+        var wide = width
+        while wide - narrow > 1 {
+            let middle = (narrow + wide) / 2
+            if text.sizeThatFits(ProposedViewSize(width: middle, height: nil)).height > height + 0.5 {
+                narrow = middle
+            } else {
+                wide = middle
+            }
+        }
+        return wide
+    }
+}
+
 /// Rows that share one box, with a hairline between each, and their values plain on the box rather than on pills.
 struct PanelCard<Content: View>: View {
     @ViewBuilder var content: Content
@@ -290,38 +322,6 @@ struct ColorSwatch: View {
         .frame(width: SwatchMetrics.rowCircle, height: SwatchMetrics.rowCircle)
         .overlay { SwatchRing(isRound: true, isSelected: isPicking, isHovered: false) }
         .accessibilityLabel(name)
-    }
-}
-
-/// Choices shown as icons, plain on the box; the chosen one sits on a raised pill. Each icon's name is its tooltip.
-struct IconChoices<Value: Equatable>: View {
-    let options: [(name: String, symbol: String, value: Value)]
-    let selected: Value?
-    let onSelect: (Value) -> Void
-
-    @Environment(\.isInPanelCard) private var isInCard
-
-    var body: some View {
-        HStack(spacing: 2) {
-            ForEach(options.indices, id: \.self) { index in
-                let option = options[index]
-                let isChosen = option.value == selected
-                Button { onSelect(option.value) } label: {
-                    Image(systemName: option.symbol)
-                        .font(.system(size: 13))
-                        .frame(width: 30, height: valueHeight(inCard: isInCard))
-                        .foregroundStyle(isChosen ? Color.primary : Color.secondary)
-                        .background {
-                            if isChosen { ChosenPill() }
-                        }
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .help(option.name)
-                .accessibilityLabel(option.name)
-                .accessibilityAddTraits(isChosen ? .isSelected : [])
-            }
-        }
     }
 }
 

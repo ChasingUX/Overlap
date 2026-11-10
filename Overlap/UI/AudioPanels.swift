@@ -195,10 +195,20 @@ struct AudioClipPanel: View {
 }
 
 /// The Audio tab with no sound selected: the master mix.
+/// The whole mix's volume and loudness, or, with nothing on the timeline that plays sound, a note saying so.
 struct MasterPanel: View {
     let store: ProjectStore
 
     var body: some View {
+        if !store.project.hasSound {
+            PlaceholderPanel(icon: .audio, title: "No audio", message: "Add a sound file or a video with sound to the timeline.",
+                             action: (title: "Import Audio…", perform: { store.presentAudioImportPanel() }))
+        } else {
+            mix
+        }
+    }
+
+    private var mix: some View {
         ClipPanel(title: "Audio") {
             PanelGroup(title: "Master") {
                 DecibelSlider(title: "Volume", volume: store.project.masterVolume,
@@ -235,7 +245,7 @@ struct TransitionPanel: View {
                 }
             }
         } else {
-            PlaceholderPanel(title: "Select a crossfade",
+            PlaceholderPanel(icon: .transitions, title: "Select a crossfade",
                              message: "Overlap two clips on one track, then click where they overlap.")
         }
     }

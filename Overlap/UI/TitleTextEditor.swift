@@ -1,14 +1,18 @@
 import AppKit
 
 /// Typing into a text clip on the canvas: a text view in the title's own font, size, color, alignment and backdrop,
-/// sized to its text and centered where the title sits. Return starts a new line, Esc cancels, and a click anywhere
-/// outside it, or losing focus, applies the text.
+/// sized to its text where the title sits. It grows from the side the title lines up on, as the title will once
+/// the text is applied. Return starts a new line, Esc cancels, and a click anywhere outside it, or losing focus,
+/// applies the text.
 final class TitleTextEditor: NSView, NSTextViewDelegate {
     let textView = NSTextView()
     private let onCommit: (String) -> Void
     private let onCancel: () -> Void
     private var center = CGPoint.zero
     private var inset = CGSize.zero
+    private var alignment = TitleAlignment.center
+    /// How wide the title is drawn with the text it had, so its lined-up side stays where it is as the text changes.
+    private var restingWidth: CGFloat = 0
     private var backdrop: NSColor?
     private var cornerRadius: CGFloat = 0
     /// Set once the edit has ended either way, so losing focus afterwards doesn't apply it again.
@@ -30,6 +34,10 @@ final class TitleTextEditor: NSView, NSTextViewDelegate {
         textView.textContainer?.lineFragmentPadding = 0
         textView.textContainer?.widthTracksTextView = false
         textView.textContainerInset = .zero
+        // Lines are laid out as wide as the title may wrap, so a selected line that ends in a return paints that far.
+        // Views draw past their bounds unless told not to; the editor and its text stay inside its box.
+        textView.clipsToBounds = true
+        clipsToBounds = true
         addSubview(textView)
     }
 
@@ -65,6 +73,7 @@ final class TitleTextEditor: NSView, NSTextViewDelegate {
     func show(_ title: Title, font: NSFont, inset: CGSize, maxWidth: CGFloat, center: CGPoint) {
         self.center = center
         self.inset = inset
+        alignment = title.alignment
         backdrop = title.backdrop.map { NSColor(srgbRed: $0.red, green: $0.green, blue: $0.blue, alpha: $0.alpha) }
         cornerRadius = title.backdrop == nil ? 0 : font.pointSize * 0.3
 
@@ -81,10 +90,13 @@ final class TitleTextEditor: NSView, NSTextViewDelegate {
         textView.textStorage?.setAttributes(attributes, range: NSRange(location: 0, length: textView.textStorage?.length ?? 0))
         textView.insertionPointColor = color
         textView.textContainer?.containerSize = CGSize(width: maxWidth, height: .greatestFiniteMagnitude)
+        let resting = NSAttributedString(string: title.text.isEmpty ? " " : title.text, attributes: attributes)
+            .boundingRect(with: CGSize(width: maxWidth, height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin, .usesFontLeading])
+        restingWidth = max(ceil(resting.width), 4) + 2 + inset.width * 2
         fit()
     }
 
-    /// Sizes the editor to its text, keeping its middle where the title's is.
+    /// Sizes the editor to its text, keeping the side the title lines up on where it is.
     private func fit() {
         guard let layout = textView.layoutManager, let container = textView.textContainer else { return }
         layout.ensureLayout(for: container)
@@ -92,7 +104,12 @@ final class TitleTextEditor: NSView, NSTextViewDelegate {
         // Room for the caret on an empty line.
         let textSize = CGSize(width: max(used.width, 4) + 2, height: max(used.height, textView.font?.pointSize ?? 12))
         let size = CGSize(width: textSize.width + inset.width * 2, height: textSize.height + inset.height * 2)
-        frame = CGRect(x: center.x - size.width / 2, y: center.y - size.height / 2, width: size.width, height: size.height)
+        let x = switch alignment {
+        case .leading: center.x - restingWidth / 2
+        case .trailing: center.x + restingWidth / 2 - size.width
+        case .center: center.x - size.width / 2
+        }
+        frame = CGRect(x: x, y: center.y - size.height / 2, width: size.width, height: size.height)
         textView.frame = CGRect(x: inset.width, y: inset.height, width: textSize.width, height: textSize.height)
         needsDisplay = true
     }

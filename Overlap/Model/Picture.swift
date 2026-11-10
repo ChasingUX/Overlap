@@ -169,8 +169,15 @@ enum TitleWeight: String, Hashable, Sendable, Codable, CaseIterable {
     var name: String { rawValue.capitalized }
 }
 
+/// How a title's lines line up, and which side stays put as its text gets wider or narrower. It isn't chosen: it
+/// follows where the title sits, left, middle or right third of the canvas.
 enum TitleAlignment: String, Hashable, Sendable, Codable, CaseIterable {
     case leading, center, trailing
+
+    /// The alignment for a title centered at `x`, a share of the canvas width from its middle.
+    init(position x: Double) {
+        self = x < -1.0 / 6 ? .leading : x > 1.0 / 6 ? .trailing : .center
+    }
 }
 
 /// How a title comes in and goes out, over half a second.
@@ -184,9 +191,11 @@ enum TitleAnimation: String, Hashable, Sendable, Codable, CaseIterable {
 /// A text clip's text and look. Where it sits, how large and how opaque come from the clip's `Visual`.
 struct Title: Hashable, Sendable, Codable {
     var text: String
-    /// A font family installed on the Mac; empty for the system font.
+    /// A font family installed on the Mac, or one of the system's own designs (see `TitleFont`); empty for the
+    /// system font.
     var fontFamily = ""
-    /// Points on a 1080-pixel-tall canvas; the text scales with the canvas.
+    /// Points on a 1080-pixel-tall canvas; the text scales with the canvas. A style sets it; the preview's handles
+    /// size the text from there.
     var size = 96.0
     var weight = TitleWeight.bold
     var color = RGBA.white
@@ -195,32 +204,107 @@ struct Title: Hashable, Sendable, Codable {
     var backdrop: RGBA?
     var animationIn = TitleAnimation.fade
     var animationOut = TitleAnimation.fade
+    /// A soft shadow under the letters, for reading over pictures without a plate.
+    var shadow = false
+
+    /// The plate a title gets when Plate is chosen and it has none yet.
+    static let plate = RGBA(red: 0, green: 0, blue: 0, alpha: 0.55)
+
+    /// How the text stands out from the picture under it: not at all, by a shadow, or on a plate.
+    var readability: TitleReadability {
+        get { backdrop != nil ? .plate : shadow ? .shadow : .none }
+        set {
+            shadow = newValue == .shadow
+            backdrop = newValue == .plate ? backdrop ?? Self.plate : nil
+        }
+    }
+
+    /// The parts of a title's look "Use for all titles" copies: its font, color, readability and animation, not its
+    /// words, size or alignment.
+    mutating func takeLook(of other: Title) {
+        fontFamily = other.fontFamily
+        weight = other.weight
+        color = other.color
+        backdrop = other.backdrop
+        shadow = other.shadow
+        animationIn = other.animationIn
+        animationOut = other.animationOut
+    }
 }
 
-/// Ready-made titles, dragged from the Text tab onto the timeline.
+extension Title {
+    /// Reads what's there and defaults the rest, so titles saved before a setting existed still open.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        text = try container.decode(String.self, forKey: .text)
+        fontFamily = try container.decodeIfPresent(String.self, forKey: .fontFamily) ?? ""
+        size = try container.decodeIfPresent(Double.self, forKey: .size) ?? 96
+        weight = try container.decodeIfPresent(TitleWeight.self, forKey: .weight) ?? .bold
+        color = try container.decodeIfPresent(RGBA.self, forKey: .color) ?? .white
+        alignment = try container.decodeIfPresent(TitleAlignment.self, forKey: .alignment) ?? .center
+        backdrop = try container.decodeIfPresent(RGBA.self, forKey: .backdrop)
+        animationIn = try container.decodeIfPresent(TitleAnimation.self, forKey: .animationIn) ?? .fade
+        animationOut = try container.decodeIfPresent(TitleAnimation.self, forKey: .animationOut) ?? .fade
+        shadow = try container.decodeIfPresent(Bool.self, forKey: .shadow) ?? false
+    }
+}
+
+/// How a title's text stands out from the picture under it.
+enum TitleReadability: String, Hashable, Sendable, CaseIterable {
+    case none, shadow, plate
+
+    var name: String { rawValue.capitalized }
+}
+
+/// The fonts the Text tab offers first: the system's own designs, then a few installed faces that read well on
+/// video. The designs are kept in `Title.fontFamily` under names no installed family has.
+enum TitleFont {
+    static let rounded = ".rounded"
+    static let serif = ".serif"
+    static let mono = ".mono"
+
+    static let designs: [(name: String, family: String)] = [("Rounded", rounded), ("New York", serif), ("Mono", mono)]
+    static let faces = ["Avenir Next", "Futura", "Georgia"]
+
+    /// What the Font menu shows for a title's font.
+    static func name(of family: String) -> String {
+        if family.isEmpty { return "System" }
+        return designs.first { $0.family == family }?.name ?? family
+    }
+}
+
+/// Ready-made titles, dragged from the Text tab onto the timeline or clicked to add at the playhead.
 enum TitleStyle: String, CaseIterable, Sendable {
-    case centeredTitle, lowerThird, caption, boldIntro
+    case centeredTitle, lowerThird, caption, boldIntro, endCard, callout
 
     var name: String {
         switch self {
-        case .centeredTitle: "Centered Title"
-        case .lowerThird: "Lower Third"
+        case .centeredTitle: "Centered"
+        case .lowerThird: "Lower third"
         case .caption: "Caption"
-        case .boldIntro: "Bold Intro"
+        case .boldIntro: "Intro"
+        case .endCard: "End card"
+        case .callout: "Callout"
         }
     }
 
     var title: Title {
         switch self {
         case .centeredTitle:
-            Title(text: "Title", size: 96, weight: .bold)
+            Title(text: "Title", size: 96, weight: .bold, shadow: true)
         case .lowerThird:
             Title(text: "Name\nRole", size: 44, weight: .semibold, alignment: .leading,
                   backdrop: RGBA(red: 0, green: 0, blue: 0, alpha: 0.55), animationIn: .slide, animationOut: .fade)
         case .caption:
-            Title(text: "Caption", size: 40, weight: .medium, backdrop: RGBA(red: 0, green: 0, blue: 0, alpha: 0.6))
+            Title(text: "A line of caption", size: 40, weight: .medium, backdrop: RGBA(red: 0, green: 0, blue: 0, alpha: 0.6))
         case .boldIntro:
-            Title(text: "Intro", size: 160, weight: .heavy, animationIn: .pop, animationOut: .fade)
+            Title(text: "Intro", size: 160, weight: .heavy, animationIn: .pop, animationOut: .fade, shadow: true)
+        case .endCard:
+            Title(text: "Thanks for watching", size: 80, weight: .bold, shadow: true)
+        case .callout:
+            // A white pill with dark text, to point at something in the picture.
+            Title(text: "Callout", size: 40, weight: .semibold, color: RGBA(hex: 0x141414),
+                  backdrop: .white, animationIn: .pop, animationOut: .fade)
         }
     }
 
@@ -228,13 +312,16 @@ enum TitleStyle: String, CaseIterable, Sendable {
     var visual: Visual {
         var visual = Visual()
         switch self {
-        case .centeredTitle, .boldIntro:
+        case .centeredTitle, .boldIntro, .endCard:
             break
         case .lowerThird:
             visual.x = -0.38
             visual.y = 0.32
         case .caption:
             visual.y = 0.33
+        case .callout:
+            visual.x = 0.33
+            visual.y = -0.33
         }
         return visual
     }

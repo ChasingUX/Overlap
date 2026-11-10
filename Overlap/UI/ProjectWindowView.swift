@@ -26,6 +26,9 @@ struct ProjectWindowView: View {
             let size = geometry.size
             let top = clampedPreviewHeight(in: size.height)
             VStack(spacing: 0) {
+                // The title bar's bottom edge, across the whole window. A row of its own rather than an overlay,
+                // which the preview would cover.
+                Hairline()
                 HStack(spacing: 0) {
                     sideColumn
                     PreviewView(store: store, aspectRatio: aspectRatio, stage: store.stageImage)
@@ -37,12 +40,11 @@ struct ProjectWindowView: View {
             }
             .overlay(alignment: .topLeading) {
                 resizeHandle(total: size.height)
-                    .padding(.top, top - 4)
+                    .padding(.top, top + 1 - 4)
             }
             .coordinateSpace(.named(Self.editorSpace))
         }
         .background(Color(nsColor: Theme.chrome))
-        .overlay(alignment: .top) { Hairline() }
         .overlay(alignment: .bottom) {
             ToastOverlay(store: store)
         }

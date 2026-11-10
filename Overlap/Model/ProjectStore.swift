@@ -246,6 +246,8 @@ final class ProjectStore {
             do {
                 let built = try await CompositionBuilder.build(project: project, assets: { self.avAsset(for: $0) }, options: options)
                 guard !Task.isCancelled else { return }
+                // Text being typed on the canvas stays out of the picture, which the editor draws instead.
+                built.plan?.update { $0.hiddenClip = editingTitleClip }
                 // Same clips in the same places: the player keeps its item and shows the change on its next frame.
                 if layout == installedLayout {
                     playback.refresh(with: built, mixChanged: mix != installedMix)
@@ -327,7 +329,7 @@ final class ProjectStore {
         editingTitleClip = nil
         playback.plan?.update { $0.hiddenClip = nil }
         if let text, text != project.clip(id)?.title?.text {
-            apply("Edit Text") { $0.changeTitle(of: [id]) { $0.text = text } }
+            apply("Edit Text") { Self.changeTitles(of: [id], in: &$0) { $0.text = text } }
         } else {
             playback.redrawPicture()
         }
@@ -349,18 +351,62 @@ final class ProjectStore {
     func setTitle(_ name: String, _ change: @escaping (inout Title) -> Void) {
         let ids = editableSelection.filter { project.clip($0)?.title != nil }
         guard !ids.isEmpty else { return }
-        apply(name) { $0.changeTitle(of: ids, change) }
+        apply(name) { Self.changeTitles(of: ids, in: &$0, change) }
     }
 
     /// Shows a text change on the selected text clips while it's being made.
     func previewTitle(_ change: @escaping (inout Title) -> Void) {
         let ids = editableSelection.filter { project.clip($0)?.title != nil }
-        previewLook { $0.changeTitle(of: ids, change) }
+        previewLook { Self.changeTitles(of: ids, in: &$0, change) }
     }
 
-    /// Adds a title in that style at the playhead, on a new track above the others.
+    /// Changes text clips, keeping the side each lines up on where it was as its text gets wider or narrower: a
+    /// title on the left keeps its left edge, one on the right its right edge, one in the middle its middle.
+    static func changeTitles(of ids: Set<UUID>, in project: inout Project, _ change: (inout Title) -> Void) {
+        let canvas = project.canvas ?? Project.defaultCanvas
+        let size = CGSize(width: canvas.width, height: canvas.height)
+        for id in ids {
+            guard let clip = project.clip(id), let before = clip.title else { continue }
+            var after = before
+            change(&after)
+            project.changeTitle(of: [id]) { $0 = after }
+            // Color and animation leave the width as it was, so only a change to what's drawn is measured.
+            var drawn = before
+            drawn.color = after.color
+            drawn.animationIn = after.animationIn
+            drawn.animationOut = after.animationOut
+            guard after.alignment != .center, drawn != after,
+                  let old = TitleRenderer.image(for: before, canvas: size), let new = TitleRenderer.image(for: after, canvas: size)
+            else { continue }
+            // Half the change in width, along the title's own turned line, as shares of the canvas.
+            let shift = Double(new.width - old.width) / 2 * clip.visual.scale * (after.alignment == .leading ? 1 : -1)
+            let angle = clip.visual.rotation * .pi / 180
+            project.changeVisual(of: [id]) { visual in
+                visual.x += shift * cos(angle) / size.width
+                visual.y += shift * sin(angle) / size.height
+            }
+        }
+    }
+
+    /// Adds a title in that style at the playhead, on a new track above the others, ready to type over.
     func addTitleAtPlayhead(_ style: TitleStyle) {
         addTitle(style, at: playback.currentTime, target: .new(at: project.tracks.count))
+        if let id = selection.first, selection.count == 1, project.clip(id)?.title != nil {
+            beginEditingTitle(id)
+        }
+    }
+
+    /// Text clips other than the selected one, which "Use for all titles" would change.
+    var otherTitleCount: Int {
+        project.tracks.flatMap(\.clips).filter { $0.title != nil && !selection.contains($0.id) }.count
+    }
+
+    /// Gives every text clip the selected one's font, color, readability and animation.
+    func useLookForAllTitles() {
+        guard let id = selection.first, let source = project.clip(id)?.title else { return }
+        let others = Set(project.tracks.flatMap(\.clips).filter { $0.title != nil && $0.id != id }.map(\.id))
+        guard !others.isEmpty else { return }
+        apply("Use for All Titles") { Self.changeTitles(of: others, in: &$0) { $0.takeLook(of: source) } }
     }
 
     /// Opens the tab that edits the selection: Text for text, else Video, else Audio.
@@ -410,7 +456,11 @@ final class ProjectStore {
     func setVisual(_ name: String, _ change: @escaping (inout Visual) -> Void) {
         let ids = pictureSelection
         guard !ids.isEmpty else { return }
-        apply(name) { $0.changeVisual(of: ids, change) }
+        apply(name) { project in
+            project.changeVisual(of: ids, change)
+            // Text lines up with the third of the canvas it's moved to.
+            project.realignTitles(ids)
+        }
     }
 
     /// Shows a placement or look change on the selected clips while it's dragged.
@@ -941,6 +991,17 @@ final class ProjectStore {
         panel.prompt = "Import"
         guard panel.runModal() == .OK else { return }
         importFiles(panel.urls)
+    }
+
+    /// Picks sound files and puts them on the timeline at the playhead, one after another on a new track at the
+    /// bottom, so there's sound to mix straight away.
+    func presentAudioImportPanel() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.audio]
+        panel.allowsMultipleSelection = true
+        panel.prompt = "Import"
+        guard panel.runModal() == .OK else { return }
+        importFiles(panel.urls, placement: (start: playback.currentTime, target: .new(at: 0)))
     }
 
     /// Copies files into the project and adds them to the library, and to the timeline when `placement` is given.

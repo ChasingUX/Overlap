@@ -17,10 +17,10 @@ struct VideoPanel: View {
             }
         } else {
             if !store.project.hasVisualClips {
-                PlaceholderPanel(title: "Select a video clip",
+                PlaceholderPanel(icon: .video, title: "Select a video clip",
                                  message: "Add a video, image or title to the timeline, then select it.")
             } else {
-                PlaceholderPanel(title: "Select a video clip",
+                PlaceholderPanel(icon: .video, title: "Select a video clip",
                                  message: "Select a picture on the timeline to set its look and color.",
                                  action: playheadAction)
             }
