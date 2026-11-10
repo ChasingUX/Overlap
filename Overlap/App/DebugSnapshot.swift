@@ -394,6 +394,38 @@ enum DebugSnapshot {
                 }
             }
 
+            // OVERLAP_SNAPSHOT_PICTUREMENU=1 lists the first picture's right-click menu, then moves, shrinks and crops
+            // it and chooses Reset Position, Reset Crop and Crop from the menu in turn.
+            var pictureMenu: [String: Any] = [:]
+            if environment["OVERLAP_SNAPSHOT_PICTUREMENU"] != nil, let store = document?.store,
+               let overlay = NSApplication.shared.windows.lazy.compactMap({ $0.contentView.flatMap { find(TransformOverlay.self, in: $0) } }).first {
+                func settle() async { try? await Task.sleep(for: .milliseconds(200)) }
+                if store.playback.currentTime == .zero,
+                   let first = store.project.tracks.flatMap(\.clips).filter({ store.project.isPlaceable($0) && $0.title == nil }).min(by: { $0.start < $1.start }) {
+                    store.playback.seek(to: first.start + Time(seconds: 1))
+                    await settle()
+                }
+                let untouched = overlay.debugPictureMenu()
+                store.setVisual("Debug") { $0.x = 0.2; $0.scale = 0.5; $0.crop.left = 0.1 }
+                await settle()
+                let changed = overlay.debugPictureMenu(choosing: "Reset Position")
+                await settle()
+                let afterPosition = store.selectedClips.first?.visual
+                _ = overlay.debugPictureMenu(choosing: "Reset Crop")
+                await settle()
+                let afterCrop = store.selectedClips.first?.visual
+                let beforeCrop = overlay.debugPictureMenu(choosing: "Crop")
+                await settle()
+                pictureMenu = [
+                    "untouched": untouched, "changed": changed,
+                    "resetPosition": afterPosition.map { [$0.x, $0.y, $0.scale, $0.rotation] } ?? [],
+                    "cropKeptAfterResetPosition": afterPosition.map { !$0.crop.isEmpty } ?? false,
+                    "cropEmptyAfterResetCrop": afterCrop?.crop.isEmpty ?? false,
+                    "beforeCrop": beforeCrop, "cropping": store.isCropping,
+                    "whileCropping": overlay.debugPictureMenu(),
+                ]
+            }
+
             // OVERLAP_SNAPSHOT_EXPORT=sheet opens the Export sheet. A format name (mp4, mov, wav, aiff, m4a) also
             // exports through it, as pressing Export does, into the snapshot's folder, and reports the file; fail
             // exports to a folder that isn't there. The sheet is captured as <prefix>-export.png, mid-export as
@@ -846,6 +878,13 @@ enum DebugSnapshot {
                 dragSummary = timeline.debugDragSummary
             }
 
+            // OVERLAP_SNAPSHOT_COPYDRAG=1 ⌥-drags the top clip to just after itself and drops a copy there.
+            var copyDrag: [String: Any] = [:]
+            if environment["OVERLAP_SNAPSHOT_COPYDRAG"] != nil,
+               let timeline = NSApplication.shared.windows.lazy.compactMap({ $0.contentView.flatMap(findTimeline) }).first {
+                copyDrag = await timeline.debugCopyDrag()
+            }
+
             // OVERLAP_SNAPSHOT_EDIT=split parks the playhead at 5 s, splits there, and records every time the
             // player reports while the rebuilt composition swaps in. The playhead should never leave 5 s.
             var editTimes: [Double] = []
@@ -913,6 +952,39 @@ enum DebugSnapshot {
                 titleEdit = [
                     "widthBefore": Double(widthBefore), "widthEditing": Double(widthEditing),
                     "fieldHadFocus": fieldHasFocus, "stillEditing": store.isEditingTitle,
+                ]
+            }
+
+            // OVERLAP_SNAPSHOT_PINCH=1 pinches the timeline open three times just right of the start, which should
+            // hold the start still, then three times in the middle, which should hold the time under the pointer.
+            // Last it pinches past the zoom limit and zooms out from the store, which shouldn't pull toward the pinch.
+            var pinch: [String: Any] = [:]
+            if environment["OVERLAP_SNAPSHOT_PINCH"] != nil, let store = document?.store,
+               let window = NSApplication.shared.windows.first(where: \.isVisible),
+               let timeline = window.contentView.flatMap({ find(TimelineView.self, in: $0) }) {
+                func settle() async { try? await Task.sleep(for: .milliseconds(150)) }
+                let startBefore = timeline.debugX(for: .zero).start
+                for _ in 0..<3 { timeline.debugPinch(by: 1.4, atX: startBefore + 30); await settle() }
+                let startAfter = timeline.debugX(for: .zero).start
+                let middle = timeline.bounds.midX
+                let startNow = timeline.debugX(for: .zero).start
+                let pixels = store.pixelsPerSecond
+                let underPointer = Time(seconds: Double(middle - startNow) / pixels)
+                for _ in 0..<3 { timeline.debugPinch(by: 1.4, atX: middle); await settle() }
+                let pointerAfter = timeline.debugX(for: underPointer).time
+                for _ in 0..<30 { timeline.debugPinch(by: 1.4, atX: middle + 200); await settle() }
+                let atLimit = store.pixelsPerSecond
+                timeline.debugPinch(by: 1.4, atX: middle + 200)
+                // The playhead is off screen by now, so a zoom from the store should hold the left edge.
+                let leftBefore = timeline.debugX(for: .zero).leftEdge
+                store.zoom(by: 0.5)
+                await settle()
+                pinch = [
+                    "startBefore": Double(startBefore), "startAfterNearStart": Double(startAfter),
+                    "pointerX": Double(middle), "pointerTimeAfter": Double(pointerAfter),
+                    "atLimit": atLimit, "leftEdgeBeforeStoreZoom": leftBefore,
+                    "leftEdgeAfterStoreZoom": timeline.debugX(for: .zero).leftEdge,
+                    "playheadX": Double(timeline.debugX(for: store.playback.currentTime).time),
                 ]
             }
 
@@ -1014,6 +1086,8 @@ enum DebugSnapshot {
                     "handle": handleReport,
                     "textEdit": textEditReport,
                     "cropClick": cropClickReport,
+                    "pictureMenu": pictureMenu,
+                    "copyDrag": copyDrag,
                     "export": exportReport,
                     "perf": perfReport,
                     "windowResize": windowResize,
@@ -1038,6 +1112,7 @@ enum DebugSnapshot {
                     "addColor": addColorReport,
                     "windowTitle": store.windowTitle,
                     "titleEdit": titleEdit,
+                    "pinch": pinch,
                     "fileURL": document?.fileURL?.path ?? "",
                 ]
                 let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])

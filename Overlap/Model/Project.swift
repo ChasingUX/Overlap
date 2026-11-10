@@ -383,6 +383,17 @@ extension Project {
         place(clip, on: target)
     }
 
+    /// Places a copy of a clip at `start` on `target`, leaving the clip where it is, and returns the copy's ID.
+    @discardableResult
+    mutating func duplicateClip(_ id: UUID, to start: Time, target: TrackTarget) -> UUID? {
+        guard let from = location(ofClip: id) else { return nil }
+        var copy = tracks[from.track].clips[from.clip]
+        copy.id = UUID()
+        copy.start = max(.zero, start)
+        place(copy, on: target)
+        return copy.id
+    }
+
     /// A clip for a whole asset, or five seconds of an image. The first video added sets the canvas, unless
     /// it's been given a fixed shape.
     private mutating func newClip(asset assetID: UUID, at start: Time) -> Clip? {

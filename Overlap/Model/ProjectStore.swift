@@ -327,14 +327,6 @@ final class ProjectStore {
         }
     }
 
-    /// Turns crop mode on or off for the selected picture, showing its handles.
-    func toggleCropping() {
-        isCropping.toggle()
-        if isCropping, selection.count == 1 {
-            handlesClip = selection.first
-        }
-    }
-
     /// Double-clicking a picture in the preview: crops it, selecting it and showing its crop handles, or, if it's
     /// already being cropped, stops.
     func toggleCropping(_ id: UUID) {
@@ -444,6 +436,13 @@ final class ProjectStore {
 
     func moveClip(_ id: UUID, to start: Time, target: TrackTarget) {
         apply("Move Clip") { $0.moveClip(id, to: start, target: target) }
+    }
+
+    /// ⌥-dragging a clip: a copy lands where it's dropped, selected, and the clip stays where it was.
+    func duplicateClip(_ id: UUID, to start: Time, target: TrackTarget) {
+        apply("Duplicate Clip") { project in
+            if let copy = project.duplicateClip(id, to: start, target: target) { selection = [copy] }
+        }
     }
 
     func moveTrack(from source: Int, to destination: Int) {

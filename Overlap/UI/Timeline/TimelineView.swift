@@ -48,6 +48,8 @@ final class TimelineView: NSView {
         var top: CGFloat
         var label: String?
         var movingClip: UUID?
+        /// The clip a ⌥-drag copies. The copy floats under its own ID, and the clip stays where it is.
+        var copyOf: UUID?
     }
 
     private enum DropContent {
@@ -63,6 +65,10 @@ final class TimelineView: NSView {
     private var zoomAnchor: (time: Time, x: CGFloat)?
     private var interaction = Interaction.none
     private var dragPreview: DragPreview?
+    /// Where the pointer was at the last step of moving a clip, for redrawing the move when ⌥ changes.
+    private var movePointer: CGPoint?
+    /// The ID a ⌥-dragged copy floats under until it's dropped and given its own.
+    private static let dragCopyID = UUID()
     /// Where each track is drawn right now, by track ID, easing toward its place in `targetLayout()`.
     private var laneY: [UUID: CGFloat] = [:]
     /// Steps track movement once per screen refresh while anything is moving.
@@ -1050,9 +1056,11 @@ final class TimelineView: NSView {
             // Clips on locked tracks select but don't move.
             guard hypot(point.x - downPoint.x, point.y - downPoint.y) > Layout.dragThreshold, !project.isLocked(clip: id) else { return }
             NSCursor.closedHand.push()
-            moveClip(id: id, grabTime: grabTime, grabY: grabY, downY: downPoint.y, leftTrack: false, point: point)
+            moveClip(id: id, grabTime: grabTime, grabY: grabY, downY: downPoint.y, leftTrack: false, point: point,
+                     copying: event.modifierFlags.contains(.option))
         case let .movingClip(id, grabTime, grabY, downY, leftTrack):
-            moveClip(id: id, grabTime: grabTime, grabY: grabY, downY: downY, leftTrack: leftTrack, point: point)
+            moveClip(id: id, grabTime: grabTime, grabY: grabY, downY: downY, leftTrack: leftTrack, point: point,
+                     copying: event.modifierFlags.contains(.option))
         case let .pressingEmptySpace(track, grabY, downPoint):
             // The first clear movement decides: up or down moves the track, anything else scrubs.
             let dx = abs(point.x - downPoint.x)
@@ -1108,7 +1116,11 @@ final class TimelineView: NSView {
             store.playback.seek(to: time(atX: downPoint.x))
         case let .movingClip(id, _, _, _, _):
             if let dragPreview {
-                store.moveClip(id, to: dragPreview.clip.start, target: dragPreview.target)
+                if dragPreview.copyOf != nil {
+                    store.duplicateClip(id, to: dragPreview.clip.start, target: dragPreview.target)
+                } else {
+                    store.moveClip(id, to: dragPreview.clip.start, target: dragPreview.target)
+                }
             }
             NSCursor.pop()
         case let .movingTrack(index, _, _):
@@ -1130,6 +1142,7 @@ final class TimelineView: NSView {
         }
         interaction = .none
         dragPreview = nil
+        movePointer = nil
         previewProject = nil
         refreshFromStore()
         updateLanes()
@@ -1298,20 +1311,36 @@ final class TimelineView: NSView {
         store.setTrackFlag(request.flag, to: request.value, onTracks: [request.trackID])
     }
 
-    /// Moves a clip sideways only, until the pointer goes far enough up or down to mean a track change.
-    private func moveClip(id: UUID, grabTime: Time, grabY: CGFloat, downY: CGFloat, leftTrack: Bool, point: CGPoint) {
+    /// Moves a clip sideways only, until the pointer goes far enough up or down to mean a track change. With
+    /// `copying` (⌥ held) a copy moves instead, and the clip stays where it is.
+    private func moveClip(id: UUID, grabTime: Time, grabY: CGFloat, downY: CGFloat, leftTrack: Bool, point: CGPoint, copying: Bool) {
         let leftTrack = leftTrack || abs(point.y - downY) > Layout.trackChangeTolerance
         interaction = .movingClip(id: id, grabTime: grabTime, grabY: grabY, downY: downY, leftTrack: leftTrack)
-        updateMovePreview(id: id, grabTime: grabTime, grabY: grabY, point: leftTrack ? point : CGPoint(x: point.x, y: downY))
+        movePointer = point
+        updateMovePreview(id: id, grabTime: grabTime, grabY: grabY, point: leftTrack ? point : CGPoint(x: point.x, y: downY), copying: copying)
     }
 
-    private func updateMovePreview(id: UUID, grabTime: Time, grabY: CGFloat, point: CGPoint) {
+    private func updateMovePreview(id: UUID, grabTime: Time, grabY: CGFloat, point: CGPoint, copying: Bool) {
         guard var clip = project.clip(id) else { return }
-        clip.start = snapped(time(atX: point.x) - grabTime, duration: clip.duration, excluding: id)
+        // A copy can snap to the clip it copies, which stays put.
+        let moving = copying ? nil : id
+        if copying { clip.id = Self.dragCopyID }
+        clip.start = snapped(time(atX: point.x) - grabTime, duration: clip.duration, excluding: moving)
         let top = floatingTop(pointerY: point.y, grabY: grabY)
-        let landing = landing(forCenter: top + scrollY + defaultRowHeight / 2, range: clip.range, movingClip: id)
-        dragPreview = DragPreview(clip: clip, target: landing.target, gap: landing.gap, top: top, label: nil, movingClip: id)
+        let landing = landing(forCenter: top + scrollY + defaultRowHeight / 2, range: clip.range, movingClip: moving)
+        dragPreview = DragPreview(clip: clip, target: landing.target, gap: landing.gap, top: top, label: nil, movingClip: moving,
+                                  copyOf: copying ? id : nil)
+        (copying ? NSCursor.dragCopy : NSCursor.closedHand).set()
         updateLanes()
+    }
+
+    /// Pressing or letting go of ⌥ mid-drag switches between moving the clip and copying it, without waiting for
+    /// the pointer to move.
+    override func flagsChanged(with event: NSEvent) {
+        super.flagsChanged(with: event)
+        guard case let .movingClip(id, grabTime, grabY, downY, leftTrack) = interaction, let movePointer else { return }
+        moveClip(id: id, grabTime: grabTime, grabY: grabY, downY: downY, leftTrack: leftTrack, point: movePointer,
+                 copying: event.modifierFlags.contains(.option))
     }
 
     override func keyDown(with event: NSEvent) {
@@ -1330,8 +1359,7 @@ final class TimelineView: NSView {
         let dy = event.scrollingDeltaY * scale
 
         if event.modifierFlags.contains(.option) || event.modifierFlags.contains(.command) {
-            zoomAnchor = (time(atX: point.x), point.x)
-            store.zoom(by: exp(Double(dy) * 0.01))
+            zoom(by: exp(Double(dy) * 0.01), at: point)
             return
         }
         if abs(dx) > abs(dy) {
@@ -1347,10 +1375,34 @@ final class TimelineView: NSView {
     }
 
     override func magnify(with event: NSEvent) {
-        let point = convert(event.locationInWindow, from: nil)
-        zoomAnchor = (time(atX: point.x), point.x)
-        store.zoom(by: 1 + Double(event.magnification))
+        zoom(by: 1 + Double(event.magnification), at: convert(event.locationInWindow, from: nil))
     }
+
+    /// Zooms around the pointer, or around the start when the pointer is within a tenth of the view of it, so
+    /// zooming in near the start keeps it where it is.
+    private func zoom(by factor: Double, at point: CGPoint) {
+        let startX = x(for: .zero)
+        let nearStart = startX >= 0 && point.x - startX <= (bounds.width - contentLeft) * 0.1
+        let earlier = zoomAnchor
+        zoomAnchor = nearStart ? (.zero, startX) : (time(atX: point.x), point.x)
+        let before = store.pixelsPerSecond
+        store.zoom(by: factor)
+        // At the zoom limit nothing changes, and a leftover anchor would pull the next zoom from the slider or
+        // menu toward this spot.
+        if store.pixelsPerSecond == before { zoomAnchor = earlier }
+    }
+
+    #if DEBUG
+    /// Zooms as a pinch at `x` would, for the debug self-check.
+    func debugPinch(by factor: Double, atX x: CGFloat) {
+        zoom(by: factor, at: CGPoint(x: x, y: bounds.midY))
+    }
+
+    /// Where time zero and `time` are drawn, and the time at the left edge, for the debug self-check.
+    func debugX(for time: Time) -> (start: CGFloat, time: CGFloat, leftEdge: Double) {
+        (x(for: .zero), x(for: time), self.time(atX: contentLeft).seconds)
+    }
+    #endif
 
     // MARK: Drop from the Media tab or Finder
 
@@ -1539,12 +1591,45 @@ extension TimelineView {
         send(.leftMouseDragged, at: end)
     }
 
-    private func send(_ type: NSEvent.EventType, at point: CGPoint) {
+    /// ⌥-drags the top track's first clip to start where it ends, along its own track, and drops it, with
+    /// synthesized mouse events. Letting go of ⌥ midway and pressing it again should change nothing. Reports
+    /// the track's clips before and after, and what the drag showed just before the drop.
+    func debugCopyDrag() async -> [String: Any] {
+        guard let row = rows.first, let clip = project.tracks[row.track].clips.first else { return ["error": "no clip"] }
+        let trackID = project.tracks[row.track].id
+        let before = project.tracks[row.track].clips.map { [$0.start.seconds, $0.duration.seconds] }
+        let countBefore = project.tracks.flatMap(\.clips).count
+        let rect = clipRect(clip, in: row.rect)
+        let start = CGPoint(x: rect.minX + 20, y: rect.midY)
+        let end = CGPoint(x: start.x + rect.width, y: rect.midY)
+        send(.leftMouseDown, at: start, flags: .option)
+        send(.leftMouseDragged, at: CGPoint(x: (start.x + end.x) / 2, y: start.y), flags: .option)
+        let midway = ["copying": dragPreview?.copyOf != nil, "originalShown": dragPreview?.movingClip == nil]
+        send(.leftMouseDragged, at: end, flags: [])
+        let releasedOption = ["copying": dragPreview?.copyOf != nil]
+        send(.leftMouseDragged, at: end, flags: .option)
+        let atDrop = ["copying": dragPreview?.copyOf != nil, "start": dragPreview?.clip.start.seconds ?? -1] as [String: Any]
+        send(.leftMouseUp, at: end, flags: .option)
+        try? await Task.sleep(for: .milliseconds(300))
+        let after = store.project.tracks.first { $0.id == trackID }?.clips.map { [$0.start.seconds, $0.duration.seconds] } ?? []
+        let copy = store.selection.first.flatMap { id in store.project.clip(id).map { (id, $0) } }
+        return ["before": before, "after": after, "midway": midway, "releasedOption": releasedOption, "atDrop": atDrop,
+                "clipsBefore": countBefore, "clipsAfter": store.project.tracks.flatMap(\.clips).count,
+                "copy": copy.map { [$0.1.start.seconds, $0.1.duration.seconds] } ?? [],
+                "copyOnSameTrack": copy.map { store.project.location(ofClip: $0.0)?.track == store.project.tracks.firstIndex { $0.id == trackID } } ?? false,
+                "selectionIsCopy": store.selection.count == 1 && store.selection.first != clip.id]
+    }
+
+    private func send(_ type: NSEvent.EventType, at point: CGPoint, flags: NSEvent.ModifierFlags = []) {
         guard let window, let event = NSEvent.mouseEvent(
-            with: type, location: convert(point, to: nil), modifierFlags: [], timestamp: 0,
+            with: type, location: convert(point, to: nil), modifierFlags: flags, timestamp: 0,
             windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1
         ) else { return }
-        type == .leftMouseDown ? mouseDown(with: event) : mouseDragged(with: event)
+        switch type {
+        case .leftMouseDown: mouseDown(with: event)
+        case .leftMouseUp: mouseUp(with: event)
+        default: mouseDragged(with: event)
+        }
     }
 }
 #endif

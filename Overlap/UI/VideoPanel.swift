@@ -1,7 +1,8 @@
 import SwiftUI
 
-/// The Video tab: where the selected picture sits, how it looks and its color. Background clips choose their fill
-/// instead. Sliders show their change as they're dragged and make it one undo step on release.
+/// The Video tab: how the selected picture looks and its color. Where it sits, its size, turn and crop are set by
+/// hand in the preview. Background clips choose their fill instead. Sliders show their change as they're dragged
+/// and make it one undo step on release.
 struct VideoPanel: View {
     let store: ProjectStore
 
@@ -20,7 +21,7 @@ struct VideoPanel: View {
                                  message: "Add a video, image or title to the timeline, then select it to place it and set its look.")
             } else {
                 PlaceholderPanel(icon: .video, title: "Select a video clip",
-                                 message: "Position, look and color settings for the selected picture show up here.",
+                                 message: "Look and color settings for the selected picture show up here.",
                                  action: playheadAction)
             }
         }
@@ -35,27 +36,6 @@ struct VideoPanel: View {
     private func picture(_ clip: Clip) -> some View {
         let visual = clip.visual
         return ClipPanel(title: "Video") {
-            PanelGroup(title: "Position") {
-                slider("X", visual.x, range: -1...1, default: 0, format: Self.percent) { $0.x = $1 }
-                slider("Y", visual.y, range: -1...1, default: 0, format: Self.percent) { $0.y = $1 }
-                // Scale works in powers of two, so 50% and 200% sit the same distance either side of 100%.
-                slider("Scale", log2(visual.scale), range: log2(Visual.scaleRange.lowerBound)...log2(Visual.scaleRange.upperBound),
-                       default: 0, format: { "\(Int((exp2($0) * 100).rounded()))%" }) { $0.scale = exp2($1) }
-                slider("Rotation", visual.rotation, range: -180...180, default: 0, detents: [-90, 0, 90],
-                       format: { "\(Int($0.rounded()))°" }) { $0.rotation = $1 }
-                // Text has no edges to crop.
-                if clip.title == nil {
-                    HStack(spacing: 6) {
-                        Button(store.isCropping ? "Done Cropping" : "Crop") { store.toggleCropping() }
-                            .buttonStyle(BoxButtonStyle())
-                        if !visual.crop.isEmpty {
-                            Button("Reset Crop") { store.setVisual("Reset Crop") { $0.crop = Crop() } }
-                                .buttonStyle(BoxButtonStyle())
-                        }
-                    }
-                }
-            }
-
             PanelGroup(title: "Look") {
                 slider("Opacity", visual.opacity, range: 0...1, default: 1, format: Self.percent) { $0.opacity = $1 }
                 slider("Corners", visual.corners, range: 0...0.5, default: 0, format: { "\(Int(($0 / 0.5 * 100).rounded()))%" }) { $0.corners = $1 }
@@ -97,7 +77,7 @@ struct VideoPanel: View {
         }
     }
 
-    /// A slider for one placement or look value. `set` writes the slider's value into the clip's settings.
+    /// A slider for one look value. `set` writes the slider's value into the clip's settings.
     private func slider(_ title: String, _ value: Double, range: ClosedRange<Double>, default defaultValue: Double,
                         detents: [Double]? = nil, format: @escaping (Double) -> String,
                         set: @escaping (inout Visual, Double) -> Void) -> some View {

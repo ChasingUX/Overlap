@@ -117,6 +117,21 @@ struct ProjectEditingTests {
         #expect(project.tracks[2].clips.first?.start == Time(seconds: 3))
     }
 
+    @Test func duplicatingLeavesTheClipAndPlacesACopy() throws {
+        var project = makeProject()
+        let added = project.addClip(asset: song.id, at: .zero, preferredTrack: 0)
+        var clip = try #require(added)
+        project.changeVisual(of: [clip.id]) { $0.opacity = 0.5 }
+        clip = try #require(project.clip(clip.id))
+        let duplicated = project.duplicateClip(clip.id, to: clip.end, target: .existing(project.tracks[0].id))
+        let copyID = try #require(duplicated)
+        #expect(copyID != clip.id)
+        #expect(project.tracks[0].clips.map(\.start) == [.zero, clip.end])
+        let copy = try #require(project.clip(copyID))
+        #expect(copy.visual == clip.visual)
+        #expect(copy.duration == clip.duration)
+    }
+
     @Test func reorderingTracksKeepsTheirClips() {
         var project = makeProject()
         project.addClip(asset: song.id, at: .zero, preferredTrack: 0)

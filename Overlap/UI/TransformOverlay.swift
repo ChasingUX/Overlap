@@ -6,7 +6,8 @@ import CoreImage
 /// opposite corner, or from the middle with Option held), the top handle to rotate it, or in crop mode an edge
 /// to crop it. Clicking a picture selects it and shows its handles;
 /// clicking anywhere else in the preview, inside the canvas or around it, hides them. Double-clicking text types
-/// into it right there; double-clicking a picture crops it, and again stops. Selecting on the timeline
+/// into it right there; double-clicking a picture crops it, and again stops. Right-clicking a picture offers Crop,
+/// Reset Crop and Reset Position. Selecting on the timeline
 /// doesn't show them. The overlay covers the whole preview, so handles off the canvas can still be grabbed.
 /// Drags show at once through the store's live preview and become one undo step on release.
 /// Holding ⌘ over the canvas's edge resizes the canvas instead (with ⌥, both sides at once), keeping everything on it
@@ -781,6 +782,10 @@ final class TransformOverlay: NSView {
         let point = convert(event.locationInWindow, from: nil)
         // While typing, the editor applies the text on its own as this click comes in.
         guard titleEditor == nil else { return }
+        if event.modifierFlags.contains(.control), let menu = menu(for: event) {
+            NSMenu.popUpContextMenu(menu, with: event, for: self)
+            return
+        }
         if event.modifierFlags.contains(.command), let edges = canvasEdges(at: point) {
             beginCanvasResize(edges, at: point)
             return
@@ -903,6 +908,60 @@ final class TransformOverlay: NSView {
         let visual = draft.visual
         store.setVisual(name) { $0 = visual }
     }
+
+    // MARK: Right-click menu
+
+    /// A right-click on a picture selects it and offers what dragging can't do in one go: cropping, taking the crop
+    /// off, and putting it back in the middle at full size, unturned. Text offers typing into it instead.
+    override func menu(for event: NSEvent) -> NSMenu? {
+        guard titleEditor == nil, canvasResize == nil, drag == nil,
+              let (clip, _) = target(at: convert(event.locationInWindow, from: nil)) else { return nil }
+        let isCropping = state?.isCropping == true && state?.handlesClip == clip.id
+        if state?.selection != [clip.id] { store.select([clip.id]) }
+        store.handlesClip = clip.id
+
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        func add(_ title: String, _ action: Selector, enabled: Bool = true) {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            item.target = self
+            item.representedObject = clip.id
+            item.isEnabled = enabled
+            menu.addItem(item)
+        }
+        if clip.title != nil {
+            add("Edit Text", #selector(contextEditText(_:)))
+        } else {
+            let visual = clip.visual
+            add(isCropping ? "Done Cropping" : "Crop", #selector(contextCrop(_:)))
+            add("Reset Crop", #selector(contextResetCrop), enabled: !visual.crop.isEmpty)
+            menu.addItem(.separator())
+            add("Reset Position", #selector(contextResetPosition),
+                enabled: visual.x != 0 || visual.y != 0 || visual.scale != 1 || visual.rotation != 0)
+        }
+        return menu
+    }
+
+    @objc private func contextEditText(_ item: NSMenuItem) {
+        if let id = item.representedObject as? UUID { store.beginEditingTitle(id) }
+    }
+
+    @objc private func contextCrop(_ item: NSMenuItem) {
+        if let id = item.representedObject as? UUID { store.toggleCropping(id) }
+    }
+
+    @objc private func contextResetCrop() {
+        store.setVisual("Reset Crop") { $0.crop = Crop() }
+    }
+
+    @objc private func contextResetPosition() {
+        store.setVisual("Reset Position") { visual in
+            visual.x = 0
+            visual.y = 0
+            visual.scale = 1
+            visual.rotation = 0
+        }
+    }
 }
 
 #if DEBUG
@@ -945,6 +1004,22 @@ extension TransformOverlay {
 
     /// Double-clicks the middle of the first picture showing that isn't text, then again, reporting whether it was
     /// being cropped after each. `midway` runs while it's being cropped.
+    /// The right-click menu of the first picture showing, as lines ("Reset Crop (off)" for one that's disabled),
+    /// after choosing `choosing` from it if given.
+    func debugPictureMenu(choosing title: String? = nil) -> [String] {
+        guard let window, let clip = visibleClips.first(where: { $0.title == nil }),
+              let points = corners(of: clip, visual: clip.visual)?.map(view) else { return [] }
+        let middle = CGPoint(x: points.map(\.x).reduce(0, +) / 4, y: points.map(\.y).reduce(0, +) / 4)
+        guard let event = NSEvent.mouseEvent(with: .rightMouseDown, location: convert(middle, to: nil), modifierFlags: [],
+                                             timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0,
+                                             clickCount: 1, pressure: 1),
+              let menu = menu(for: event) else { return [] }
+        if let title, let item = menu.items.first(where: { $0.title == title }), let action = item.action {
+            NSApplication.shared.sendAction(action, to: item.target, from: item)
+        }
+        return menu.items.map { $0.isSeparatorItem ? "—" : $0.title + ($0.isEnabled ? "" : " (off)") }
+    }
+
     func debugDoubleClickPicture(midway: () -> Void) async -> [String: Any] {
         // The playhead moves into the first picture if none is showing.
         if !visibleClips.contains(where: { $0.title == nil }), let project = state?.project,
