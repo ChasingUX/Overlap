@@ -826,12 +826,20 @@ enum DebugSnapshot {
                 ]
             }
 
+            // OVERLAP_SNAPSHOT_CROSSFADE=video first puts a second copy of the first video just after it, on its track.
+            if environment["OVERLAP_SNAPSHOT_CROSSFADE"] == "video", let store = document?.store,
+               let track = store.project.tracks.first(where: { track in track.clips.contains { store.project.asset($0.assetID)?.kind == .video } }),
+               let video = track.clips.first(where: { store.project.asset($0.assetID)?.kind == .video }) {
+                store.apply("Add Clip") { _ = $0.addClip(asset: video.assetID, at: video.end, target: .existing(track.id)) }
+            }
             // OVERLAP_SNAPSHOT_CROSSFADE=transition or fade slides the second clip on a two-clip track back so the
             // two overlap by 4 seconds with an S-curve, gives the first a 3-second fade in, then either selects the
             // crossfade or selects the first clip in the Audio tab.
             var crossfadeReport: [String: Any] = [:]
             if let mode = environment["OVERLAP_SNAPSHOT_CROSSFADE"], let store = document?.store,
-               let track = store.project.tracks.first(where: { $0.clips.count >= 2 }) {
+               let track = store.project.tracks.first(where: { track in
+                   track.clips.count >= 2 && (mode != "video" || track.clips.allSatisfy { store.project.asset($0.assetID)?.kind == .video })
+               }) {
                 let clips = track.clips.sorted { $0.start < $1.start }
                 store.moveClip(clips[1].id, to: clips[0].end - Time(seconds: 4), target: .existing(track.id))
                 store.setFade(.start, duration: Time(seconds: 3), curve: .sCurve, clips: [clips[0].id])

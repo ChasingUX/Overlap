@@ -49,124 +49,6 @@ struct DecibelSlider: View {
     }
 }
 
-// MARK: - Curves
-
-/// The six curve presets and Custom, two to a line in one box so every name fits; the chosen one sits on a
-/// raised pill.
-struct CurvePresetGrid: View {
-    let selected: Curve
-    let onSelect: (Curve) -> Void
-
-    static let defaultCustom = Curve.custom(x1: 0.42, y1: 0, x2: 0.58, y2: 1)
-
-    var body: some View {
-        // Every custom curve shows as Custom; choosing Custom again keeps the one already drawn.
-        OptionGrid(options: Curve.presets.map { ($0.name, $0) } + [("Custom", Self.defaultCustom)],
-                   selected: selected.isCustom ? Self.defaultCustom : selected, columns: 2) { curve in
-            if curve.isCustom, selected.isCustom { return }
-            onSelect(curve)
-        }
-    }
-}
-
-/// Draws a crossfade's curve, the incoming side bright and the outgoing side mirrored and dim, and for a custom
-/// curve lets you drag its two bezier handles. A drag is one undoable change.
-struct CurveEditor: View {
-    let curve: Curve
-    let onCommit: (Curve) -> Void
-
-    @State private var draft: Curve?
-    @State private var dragging: Int?
-    @State private var size: CGSize = .zero
-
-    private let inset: CGFloat = 10
-
-    private var shown: Curve { draft ?? curve }
-
-    var body: some View {
-        SwiftUI.Canvas { context, size in
-            let area = CGRect(x: inset, y: inset, width: size.width - inset * 2, height: size.height - inset * 2)
-            context.stroke(Path(roundedRect: area, cornerRadius: 3), with: .color(.primary.opacity(0.08)))
-
-            context.stroke(path(in: area) { shown.gain(at: 1 - $0) }, with: .color(.primary.opacity(0.35)), lineWidth: 1.5)
-            context.stroke(path(in: area) { shown.gain(at: $0) }, with: .color(.primary.opacity(0.9)), lineWidth: 1.5)
-
-            if case let .custom(x1, y1, x2, y2) = shown {
-                let first = point(x1, y1, in: area)
-                let second = point(x2, y2, in: area)
-                var arms = Path()
-                arms.move(to: point(0, 0, in: area))
-                arms.addLine(to: first)
-                arms.move(to: point(1, 1, in: area))
-                arms.addLine(to: second)
-                context.stroke(arms, with: .color(.accentColor.opacity(0.8)), lineWidth: 1)
-                for handle in [first, second] {
-                    context.fill(Path(ellipseIn: CGRect(x: handle.x - 5, y: handle.y - 5, width: 10, height: 10)), with: .color(.accentColor))
-                }
-            }
-        }
-        .frame(height: 120)
-        .onGeometryChange(for: CGSize.self) { $0.size } action: { size = $0 }
-        .gesture(handleDrag)
-        .accessibilityLabel("Curve")
-        .background(ControlBox())
-        // The two sides, named under the box, where they can't sit on the curves.
-        .overlay(alignment: .bottomLeading) {
-            HStack(spacing: 10) {
-                legend("In", opacity: 0.9)
-                legend("Out", opacity: 0.35)
-            }
-            .padding(.leading, PanelMetrics.insidePadding)
-            .offset(y: 18)
-            .allowsHitTesting(false)
-        }
-        .padding(.bottom, 18)
-    }
-
-    private func legend(_ text: String, opacity: Double) -> some View {
-        HStack(spacing: 4) {
-            Capsule().fill(Color.primary.opacity(opacity)).frame(width: 10, height: 2)
-            Text(text).font(.system(size: 10)).foregroundStyle(.secondary)
-        }
-    }
-
-    private func path(in area: CGRect, _ gain: (Double) -> Double) -> Path {
-        var path = Path()
-        for step in 0...60 {
-            let t = Double(step) / 60
-            let next = point(t, gain(t), in: area)
-            if step == 0 { path.move(to: next) } else { path.addLine(to: next) }
-        }
-        return path
-    }
-
-    private func point(_ x: Double, _ y: Double, in area: CGRect) -> CGPoint {
-        CGPoint(x: area.minX + CGFloat(x) * area.width, y: area.maxY - CGFloat(y) * area.height)
-    }
-
-    /// Picks up the nearer handle and moves it, keeping both inside the square so the curve stays a function of time.
-    private var handleDrag: some Gesture {
-        DragGesture(minimumDistance: 0)
-            .onChanged { drag in
-                guard case let .custom(x1, y1, x2, y2) = shown else { return }
-                let area = CGRect(x: inset, y: inset, width: size.width - inset * 2, height: size.height - inset * 2)
-                let x = Double((drag.location.x - area.minX) / area.width).clamped(to: 0...1)
-                let y = Double((area.maxY - drag.location.y) / area.height).clamped(to: 0...1)
-                if dragging == nil {
-                    let first = hypot(drag.startLocation.x - point(x1, y1, in: area).x, drag.startLocation.y - point(x1, y1, in: area).y)
-                    let second = hypot(drag.startLocation.x - point(x2, y2, in: area).x, drag.startLocation.y - point(x2, y2, in: area).y)
-                    dragging = first <= second ? 1 : 2
-                }
-                draft = dragging == 1 ? .custom(x1: x, y1: y, x2: x2, y2: y2) : .custom(x1: x1, y1: y1, x2: x, y2: y)
-            }
-            .onEnded { _ in
-                if let draft { onCommit(draft) }
-                draft = nil
-                dragging = nil
-            }
-    }
-}
-
 // MARK: - Panels
 
 /// The Audio tab with a clip selected: its volume, its track, and its speed for sound-only clips. Fades are
@@ -223,30 +105,103 @@ struct MasterPanel: View {
     }
 }
 
-/// The selected crossfade: its length, its curve, and making that curve the default.
+/// The selected crossfade: its length, its curve, how the picture changes when both clips show one, and giving
+/// every crossfade the same curve. Its length slides the later clip, as dragging it would.
 struct TransitionPanel: View {
     let store: ProjectStore
+
+    /// The longest the slider reaches, unless the crossfade is already longer.
+    private static let usualLongest = 5.0
 
     var body: some View {
         if let crossfade = store.selectedCrossfade {
             ClipPanel(title: "Transitions") {
                 PanelGroup(title: "Crossfade") {
-                    ValueRow(title: "Duration", value: String(format: "%.2f s", crossfade.range.duration.seconds))
-                    CurvePresetGrid(selected: crossfade.curve) { store.setCrossfadeCurve($0) }
-                    CurveEditor(curve: crossfade.curve) { store.setCrossfadeCurve($0) }
-                    if [crossfade.outgoing, crossfade.incoming].allSatisfy(store.project.showsPicture) {
-                        OptionRow(title: "Video", options: VideoTransition.allCases.map { ($0.name, $0) }, selected: crossfade.videoStyle) {
+                    duration(of: crossfade)
+                    // Set apart from the slider, as their names under them set them apart from what follows.
+                    CrossfadeCurveTiles(selected: crossfade.curve) { store.setCrossfadeCurve($0) }
+                        .padding(.top, 10)
+                }
+                // How the picture changes, only when both clips show one.
+                if [crossfade.outgoing, crossfade.incoming].allSatisfy(store.project.showsPicture) {
+                    PanelGroup(title: "Picture") {
+                        OptionRow(options: VideoTransition.allCases.map { ($0.name, $0) }, selected: crossfade.videoStyle) {
                             store.setCrossfadeVideoStyle($0)
                         }
                     }
-                    Button("Use as Default for New Crossfades") { store.useCrossfadeCurveAsDefault() }
-                        .buttonStyle(BoxButtonStyle())
-                        .disabled(store.project.defaultCrossfadeCurve == crossfade.curve)
+                }
+                // Only worth offering with other crossfades to change.
+                if store.otherCrossfadeCount > 0 {
+                    Button { store.useCrossfadeCurveForAll() } label: {
+                        Text("Use for all crossfades")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(BoxButtonStyle())
+                    .help("Give every crossfade this curve, and start new ones with it")
                 }
             }
         } else {
             PlaceholderPanel(icon: .transitions, title: "Select a crossfade",
                              message: "Overlap two clips on one track, then click where they overlap.")
         }
+    }
+
+    /// Lengthens or shortens the crossfade by sliding the later clip, as far as the clips around allow.
+    @ViewBuilder private func duration(of crossfade: Crossfade) -> some View {
+        let length = crossfade.range.duration.seconds
+        let shortest = Project.shortestCrossfade.seconds
+        let longest = store.project.longestCrossfade(into: crossfade.incoming.id)?.seconds ?? length
+        let top = max(length, min(longest, Self.usualLongest))
+        if top - shortest > 0.05 {
+            BoxSlider(title: "Duration", value: length, range: shortest...top, format: { String(format: "%.1f s", $0) },
+                      onCommit: { store.setCrossfadeDuration(Time(seconds: $0)) })
+        } else {
+            ValueRow(title: "Duration", value: String(format: "%.1f s", length))
+        }
+    }
+}
+
+/// The offered curves as tiles, each drawing a crossfade on it: the incoming clip rising bright as the outgoing
+/// one falls dim. A curve that isn't offered any more leaves none chosen.
+private struct CrossfadeCurveTiles: View {
+    let selected: Curve
+    let onSelect: (Curve) -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            ForEach(Curve.presets, id: \.self) { curve in
+                VStack(alignment: .leading, spacing: 5) {
+                    Swatch(isRound: false, isSelected: curve == selected, name: curve.name, action: { onSelect(curve) }) {
+                        CrossfadeCurve(curve: curve)
+                    }
+                    .frame(height: 56)
+                    PanelLabel(curve.name)
+                        .padding(.leading, 2)
+                }
+            }
+        }
+    }
+}
+
+/// One curve's two sides, drawn from the gain the crossfade plays by, as the timeline draws them.
+private struct CrossfadeCurve: View {
+    let curve: Curve
+
+    var body: some View {
+        SwiftUI.Canvas { context, size in
+            let area = CGRect(x: 12, y: 12, width: size.width - 24, height: size.height - 24)
+            for rising in [false, true] {
+                var path = Path()
+                for step in 0...48 {
+                    let progress = Double(step) / 48
+                    let gain = curve.gain(at: rising ? progress : 1 - progress)
+                    let point = CGPoint(x: area.minX + progress * area.width, y: area.maxY - gain * area.height)
+                    if step == 0 { path.move(to: point) } else { path.addLine(to: point) }
+                }
+                context.stroke(path, with: .color(.primary.opacity(rising ? 0.9 : 0.35)),
+                               style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+            }
+        }
+        .accessibilityHidden(true)
     }
 }

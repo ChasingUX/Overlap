@@ -87,6 +87,63 @@ struct CrossfadeTests {
         #expect(firstEnd < secondEnd)
     }
 
+    @Test func aCrossfadesLengthSlidesTheLaterClip() throws {
+        var project = makeProject()
+        let first = piece(at: 0)
+        let second = piece(at: 8)
+        let later = piece(at: 25)
+        project.tracks[0].clips = [first, second, later]
+
+        project.setCrossfadeDuration(seconds(4), into: second.id)
+        #expect(project.crossfade(into: second.id)?.range == TimeRange(start: seconds(6), duration: seconds(4)))
+        // Both clips play all they did, and the clip after keeps its distance.
+        #expect(project.clip(second.id)?.sourceStart == seconds(5))
+        #expect(project.clip(second.id)?.duration == seconds(10))
+        #expect(project.clip(first.id)?.end == seconds(10))
+        #expect(project.clip(later.id)?.start == seconds(23))
+
+        project.setCrossfadeDuration(seconds(1), into: second.id)
+        #expect(project.crossfade(into: second.id)?.range == TimeRange(start: seconds(9), duration: seconds(1)))
+        #expect(project.clip(later.id)?.start == seconds(26))
+
+        // It never gets so short it stops being a crossfade.
+        project.setCrossfadeDuration(.zero, into: second.id)
+        #expect(project.crossfade(into: second.id)?.range.duration == Project.shortestCrossfade)
+    }
+
+    @Test func aLongerCrossfadeStopsAtTheClipsAround() throws {
+        var project = makeProject()
+        let clips = [piece(at: 0), piece(at: 9), piece(at: 17)]
+        project.tracks[0].clips = clips
+        // The last clip can come back only as far as the first one's end, or three would play at once.
+        #expect(project.longestCrossfade(into: clips[2].id) == seconds(9))
+        // The middle one brings the last along, which stops it at the first one's end too.
+        project.setCrossfadeDuration(seconds(30), into: clips[1].id)
+        #expect(project.crossfade(into: clips[1].id)?.range.duration == seconds(8))
+        #expect(project.clip(clips[2].id)?.start == seconds(10))
+        #expect(Project.isPlayable(project.tracks[0].clips))
+    }
+
+    @Test func oneCurveForEveryCrossfade() {
+        var project = makeProject()
+        let clips = [piece(at: 0), piece(at: 8), piece(at: 16)]
+        project.tracks[0].clips = clips
+        project.setCrossfadeCurve(.sCurve, into: clips[1].id)
+        project.useCrossfadeCurveForAll(.linear)
+        #expect(project.allCrossfades.map(\.curve) == [.linear, .linear])
+        #expect(project.defaultCrossfadeCurve == .linear)
+    }
+
+    @Test func trimmingAnEndIntoAGapLeavesTheNextClip() {
+        var project = makeProject()
+        let first = piece(at: 0, sourceStart: 0)
+        let second = piece(at: 15)
+        project.tracks[0].clips = [first, second]
+        project.trim(first.id, edge: .end, to: seconds(12))
+        #expect(project.clip(first.id)?.end == seconds(12))
+        #expect(project.clip(second.id)?.start == seconds(15))
+    }
+
     @Test func trimmingTouchingClipsDoesntStartACrossfade() {
         var project = makeProject()
         let first = piece(at: 0, sourceStart: 0)
@@ -168,7 +225,7 @@ struct TransitionSelectionTests {
         #expect(store.selectedCrossfade?.incoming.id == incoming)
 
         store.setCrossfadeCurve(.sCurve)
-        store.useCrossfadeCurveAsDefault()
+        store.useCrossfadeCurveForAll()
         #expect(store.project.defaultCrossfadeCurve == .sCurve)
 
         store.select([incoming])

@@ -598,8 +598,10 @@ extension Project {
                 earliest = max(earliest, before.end)
             }
             let newEnd = min(max(time, earliest), latest)
-            shift = newEnd - clip.end
-            clip.duration = clip.duration + shift
+            let change = newEnd - clip.end
+            clip.duration = clip.duration + change
+            // Only a ripple trim moves the clips after; a normal one stops short of them.
+            shift = ripple ? change : .zero
         }
 
         tracks[location.track].clips[location.clip] = clip
@@ -757,6 +759,72 @@ extension Project {
     mutating func setCrossfadeCurve(_ curve: Curve, into id: UUID) {
         guard let location = location(ofClip: id), !tracks[location.track].isLocked else { return }
         tracks[location.track].clips[location.clip].crossfadeCurve = curve
+    }
+
+    /// Every crossfade in the project, track by track.
+    var allCrossfades: [Crossfade] { tracks.indices.flatMap { crossfades(onTrack: $0) } }
+
+    /// Gives every crossfade the curve, and makes it the one new crossfades start with.
+    mutating func useCrossfadeCurveForAll(_ curve: Curve) {
+        for crossfade in allCrossfades {
+            setCrossfadeCurve(curve, into: crossfade.incoming.id)
+        }
+        defaultCrossfadeCurve = curve
+    }
+
+    /// The shortest a crossfade can be set to, so it stays a crossfade.
+    static let shortestCrossfade = Time(seconds: 0.1)
+
+    /// Makes the crossfade into a clip `duration` long, as near as the clips allow, by sliding that clip, and the
+    /// clips after it on its track with it, as dragging it would. Neither clip loses any of what it plays, and the
+    /// clips after it keep their places relative to it. It stops before the clip would cover the one before or make
+    /// three clips play at once.
+    mutating func setCrossfadeDuration(_ duration: Time, into id: UUID) {
+        guard let crossfade = crossfade(into: id), let track = location(ofClip: id)?.track, !tracks[track].isLocked else { return }
+        let wanted = max(duration, Self.shortestCrossfade) - crossfade.range.duration
+        let original = tracks[track].clips
+        let moving = Set(original.filter { $0.id != crossfade.outgoing.id && $0.start >= crossfade.incoming.start }.map(\.id))
+        /// The track with the moving clips slid earlier by `amount`, or later for a negative one.
+        func slid(by amount: Time) -> [Clip] {
+            original.map { clip in
+                var clip = clip
+                if moving.contains(clip.id) { clip.start = clip.start - amount }
+                return clip
+            }
+        }
+        var amount = wanted
+        if !Self.isPlayable(slid(by: amount)) {
+            // The furthest it can go: playable at `reached`, not at `blocked`.
+            var reached = Time.zero
+            var blocked = wanted
+            while abs(blocked.ticks - reached.ticks) > 1 {
+                let middle = Time(ticks: reached.ticks + (blocked.ticks - reached.ticks) / 2)
+                if Self.isPlayable(slid(by: middle)) { reached = middle } else { blocked = middle }
+            }
+            amount = reached
+        }
+        tracks[track].clips = slid(by: amount).sorted { $0.start < $1.start }
+    }
+
+    /// Whether clips can share a track: none before zero, covering another or inside one, and never three at once.
+    static func isPlayable(_ clips: [Clip]) -> Bool {
+        let ranges = clips.map(\.range)
+        guard ranges.allSatisfy({ $0.start >= .zero }) else { return false }
+        for (index, range) in ranges.enumerated() {
+            for other in ranges[(index + 1)...] where other.overlaps(range) {
+                let covers = range.start <= other.start && other.end <= range.end
+                let inside = other.start <= range.start && range.end <= other.end
+                if covers || inside { return false }
+            }
+        }
+        return mostAtOnce(ranges) <= 2
+    }
+
+    /// The longest the crossfade into a clip can be made.
+    func longestCrossfade(into id: UUID) -> Time? {
+        var trial = self
+        trial.setCrossfadeDuration(Time(seconds: 24 * 3600), into: id)
+        return trial.crossfade(into: id)?.range.duration
     }
 
     /// Splits each video's sound into its own clip on a new track just below. Returns the new sound clips.

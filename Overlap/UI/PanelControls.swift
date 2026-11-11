@@ -231,27 +231,6 @@ struct OptionRow<Value: Equatable>: View {
     }
 }
 
-/// More choices than fit in a row, in a grid of plain words in one box; the chosen one sits on a raised pill.
-struct OptionGrid<Value: Equatable>: View {
-    let options: [(label: String, value: Value)]
-    let selected: Value?
-    var columns = 3
-    let onSelect: (Value) -> Void
-
-    var body: some View {
-        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 2), count: columns), spacing: 2) {
-            ForEach(options.indices, id: \.self) { index in
-                let option = options[index]
-                Button(option.label) { onSelect(option.value) }
-                    .buttonStyle(OptionButtonStyle(isSelected: option.value == selected, fillsWidth: true))
-            }
-        }
-        .font(.system(size: 12))
-        .padding(PanelMetrics.pillInset)
-        .background(ControlBox())
-    }
-}
-
 /// A label and a pop-up menu showing its current choice on a pill.
 struct MenuRow<Items: View>: View {
     let title: String

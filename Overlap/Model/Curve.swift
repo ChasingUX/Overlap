@@ -12,15 +12,16 @@ enum Curve: Hashable, Sendable, Codable {
     /// A cubic bezier from (0, 0) to (1, 1) with two control points, like CSS cubic-bezier.
     case custom(x1: Double, y1: Double, x2: Double, y2: Double)
 
-    static let presets: [Curve] = [.linear, .easeIn, .easeOut, .sCurve, .equalPower, .exponential]
+    /// The curves offered for fades and crossfades. The others still play where a project already uses them.
+    static let presets: [Curve] = [.linear, .sCurve, .equalPower]
 
     var name: String {
         switch self {
         case .linear: "Linear"
-        case .easeIn: "Ease In"
-        case .easeOut: "Ease Out"
-        case .sCurve: "S-Curve"
-        case .equalPower: "Equal Power"
+        case .easeIn: "Ease in"
+        case .easeOut: "Ease out"
+        case .sCurve: "Smooth"
+        case .equalPower: "Equal power"
         case .exponential: "Exponential"
         case .custom: "Custom"
         }

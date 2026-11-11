@@ -22,7 +22,9 @@ struct TimeTests {
 }
 
 struct CurveTests {
-    static let all = Curve.presets + [.custom(x1: 0.42, y1: 0, x2: 0.58, y2: 1)]
+    /// Every curve a project can hold, offered or not.
+    static let all: [Curve] = [.linear, .easeIn, .easeOut, .sCurve, .equalPower, .exponential,
+                               .custom(x1: 0.42, y1: 0, x2: 0.58, y2: 1)]
 
     @Test(arguments: all)
     func startsSilentAndEndsFull(curve: Curve) {

@@ -144,7 +144,7 @@ enum VideoTransition: String, Hashable, Sendable, Codable, CaseIterable {
     var name: String {
         switch self {
         case .dissolve: "Dissolve"
-        case .dipToBlack: "Dip to Black"
+        case .dipToBlack: "Dip to black"
         }
     }
 }

@@ -752,10 +752,21 @@ final class ProjectStore {
         apply("Change Crossfade Curve") { $0.setCrossfadeCurve(curve, into: incoming) }
     }
 
-    /// Makes the selected crossfade's curve the one new crossfades start with.
-    func useCrossfadeCurveAsDefault() {
+    /// Gives every crossfade the selected one's curve, and new crossfades start with it too.
+    func useCrossfadeCurveForAll() {
         guard let curve = selectedCrossfade?.curve else { return }
-        apply("Set Default Crossfade") { $0.defaultCrossfadeCurve = curve }
+        apply("Use Curve for All Crossfades") { $0.useCrossfadeCurveForAll(curve) }
+    }
+
+    /// Lengthens or shortens the selected crossfade about its middle.
+    func setCrossfadeDuration(_ duration: Time) {
+        guard let incoming = selectedTransition else { return }
+        apply("Change Crossfade Duration") { $0.setCrossfadeDuration(duration, into: incoming) }
+    }
+
+    /// How many crossfades there are besides the selected one.
+    var otherCrossfadeCount: Int {
+        project.allCrossfades.filter { $0.incoming.id != selectedTransition }.count
     }
 
     func setFade(_ edge: Project.ClipEdge, duration: Time? = nil, curve: Curve? = nil, clips ids: Set<UUID>? = nil) {

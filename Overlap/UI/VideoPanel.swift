@@ -33,12 +33,22 @@ struct VideoPanel: View {
         return (title: "Select Clip at Playhead", perform: { store.selectClipAtPlayhead() })
     }
 
+    /// The clip's own settings first, then its color. Find loops sits with the clip's settings until it has found
+    /// something; then the loops take a group of their own at the end, where they have room.
     private func picture(_ clip: Clip) -> some View {
         let visual = clip.visual
+        let loops = store.selectedClips.count == 1 && clip.title == nil && store.project.asset(clip.assetID)?.kind == .video
+        let loopsShown = loops && LoopSection.hasStarted(store: store, clip: clip)
         return ClipPanel(title: "Video") {
-            PanelGroup(title: "Look") {
+            PanelGroup(title: store.selectedClips.count > 1 ? "Clips" : "Clip") {
                 // Corners and shadow come from the Canvas tab's frame, the same for every picture.
                 slider("Opacity", visual.opacity, range: 0...1, default: 1, format: Self.percent) { $0.opacity = $1 }
+                if !store.project.isStill(clip) {
+                    SpeedSection(store: store)
+                }
+                if loops, !loopsShown {
+                    FindLoopsButton(store: store, clip: clip)
+                }
             }
 
             // Text takes its color from the Text tab.
@@ -53,13 +63,7 @@ struct VideoPanel: View {
                 }
             }
 
-            if !store.project.isStill(clip) {
-                PanelGroup(title: store.selectedClips.count > 1 ? "Clips" : "Clip") {
-                    SpeedSection(store: store)
-                }
-            }
-
-            if store.selectedClips.count == 1, clip.title == nil, store.project.asset(clip.assetID)?.kind == .video {
+            if loopsShown {
                 LoopSection(store: store, clip: clip)
             }
         }

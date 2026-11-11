@@ -749,11 +749,12 @@ final class TimelineView: NSView {
         NSGraphicsContext.restoreGraphicsState()
     }
 
-    /// Where two clips overlap: a darker box with both gain curves crossing, the incoming one brighter.
+    /// Where two clips overlap: a darker box with both gain curves crossing, the incoming one brighter. Selected,
+    /// it's outlined in white, as a selected clip is.
     private func drawCrossfade(_ crossfade: Crossfade, in rect: CGRect) {
         guard rect.maxX >= 0, rect.minX <= bounds.width else { return }
         let selected = snapshot.selectedTransition == crossfade.incoming.id
-        (selected ? NSColor.controlAccentColor.withAlphaComponent(0.25) : Theme.crossfadeFill).setFill()
+        Theme.crossfadeFill.setFill()
         NSBezierPath(roundedRect: rect, xRadius: Layout.crossfadeRadius, yRadius: Layout.crossfadeRadius).fill()
 
         let area = rect.insetBy(dx: 0, dy: 6)
@@ -775,7 +776,7 @@ final class TimelineView: NSView {
         let stroke = NSBezierPath(roundedRect: rect.insetBy(dx: 0.5, dy: 0.5), xRadius: Layout.crossfadeRadius - 0.5,
                                   yRadius: Layout.crossfadeRadius - 0.5)
         stroke.lineWidth = selected ? 1.5 : 1
-        (selected ? NSColor.controlAccentColor : Theme.crossfadeStroke).setStroke()
+        (selected ? Theme.clipSelectedStroke : Theme.crossfadeStroke).setStroke()
         stroke.stroke()
     }
 

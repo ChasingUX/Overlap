@@ -10,6 +10,11 @@ struct LoopSection: View {
 
     @State private var fromPlayhead = false
 
+    /// Whether finding loops has begun for the clip's video, so there's more to show than the button.
+    static func hasStarted(store: ProjectStore, clip: Clip) -> Bool {
+        store.loopProgress[clip.assetID] != nil || store.suggestedLoops[clip.assetID] != nil
+    }
+
     var body: some View {
         PanelGroup(title: "Loop") {
             if let progress = store.loopProgress[clip.assetID] {
@@ -43,8 +48,7 @@ struct LoopSection: View {
                     PanelNote(text: "This video's frames couldn't be read.")
                 }
             } else {
-                Button("Find Loops") { store.findLoops(inAsset: clip.assetID) }
-                    .buttonStyle(BoxButtonStyle())
+                FindLoopsButton(store: store, clip: clip)
             }
         }
         .onDisappear { store.highlightedLoop = nil }
@@ -64,6 +68,21 @@ struct LoopSection: View {
                 }
             }
         }
+    }
+}
+
+/// Starts looking for loops in the clip's video. Until it's pressed it sits with the clip's other settings.
+struct FindLoopsButton: View {
+    let store: ProjectStore
+    let clip: Clip
+
+    var body: some View {
+        Button { store.findLoops(inAsset: clip.assetID) } label: {
+            Text("Find loops")
+                .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(BoxButtonStyle())
+        .help("Look for places this video loops seamlessly")
     }
 }
 
