@@ -202,6 +202,8 @@ final class ProjectStore {
         guard !isExporting else { return }
         let before = project
         change(&project)
+        // Text kept to a place on the canvas follows the canvas when it changes size.
+        if project.canvas != before.canvas { Self.placeTitles(project.anchoredTitleIDs, in: &project) }
         project.normalizeTracks()
         registerUndo(restoring: before, actionName: actionName)
         isSaving = true
@@ -230,6 +232,7 @@ final class ProjectStore {
     }
 
     private func projectDidChange() {
+        handlesPreview = nil
         updateStage()
         let clipIDs = Set(project.tracks.flatMap(\.clips).map(\.id))
         selection = selection.intersection(clipIDs)
@@ -365,17 +368,29 @@ final class ProjectStore {
     func setTitle(_ name: String, _ change: @escaping (inout Title) -> Void) {
         let ids = editableSelection.filter { project.clip($0)?.title != nil }
         guard !ids.isEmpty else { return }
+        lastChangedTitle = ids.first
         apply(name) { Self.changeTitles(of: ids, in: &$0, change) }
     }
+
+    /// The title last changed in the Text tab, whose look new text takes.
+    @ObservationIgnored private var lastChangedTitle: UUID?
 
     /// Shows a text change on the selected text clips while it's being made.
     func previewTitle(_ change: @escaping (inout Title) -> Void) {
         let ids = editableSelection.filter { project.clip($0)?.title != nil }
-        previewLook { Self.changeTitles(of: ids, in: &$0, change) }
+        var preview = project
+        Self.changeTitles(of: ids, in: &preview, change)
+        handlesPreview = preview
+        previewLook { $0 = preview }
     }
 
-    /// Changes text clips, keeping the side each lines up on where it was as its text gets wider or narrower: a
-    /// title on the left keeps its left edge, one on the right its right edge, one in the middle its middle.
+    /// The project as a Text or Canvas slider being dragged shows it, so the preview's handles follow the text, or the
+    /// padding, as it moves. Nil once the change is applied, or with no slider being dragged.
+    private(set) var handlesPreview: Project?
+
+    /// Changes text clips. One kept to a place goes back onto it, its margin in from the edges whatever its size. Any
+    /// other keeps the side it lines up on where it was as its text gets wider or narrower: a title on the left keeps
+    /// its left edge, one on the right its right edge, one in the middle its middle.
     static func changeTitles(of ids: Set<UUID>, in project: inout Project, _ change: (inout Title) -> Void) {
         let canvas = project.canvas ?? Project.defaultCanvas
         let size = CGSize(width: canvas.width, height: canvas.height)
@@ -384,6 +399,10 @@ final class ProjectStore {
             var after = before
             change(&after)
             project.changeTitle(of: [id]) { $0 = after }
+            if after.anchor != nil {
+                placeTitles([id], in: &project)
+                continue
+            }
             // Color and animation leave the width as it was, so only a change to what's drawn is measured.
             var drawn = before
             drawn.color = after.color
@@ -402,11 +421,86 @@ final class ProjectStore {
         }
     }
 
+    /// Puts text clips kept to a place back on it: their lines line up with its side, and their box sits its margin
+    /// in from the canvas's edges, or in the middle.
+    static func placeTitles(_ ids: Set<UUID>, in project: inout Project) {
+        let canvas = project.canvas ?? Project.defaultCanvas
+        let size = CGSize(width: canvas.width, height: canvas.height)
+        for id in ids {
+            guard let clip = project.clip(id), var title = clip.title, let anchor = title.anchor else { continue }
+            if title.alignment != anchor.alignment {
+                title.alignment = anchor.alignment
+                project.changeTitle(of: [id]) { $0.alignment = anchor.alignment }
+            }
+            guard let image = TitleRenderer.image(for: title, canvas: size) else { continue }
+            let box = TitleAnchor.box(of: CGSize(width: image.width, height: image.height), visual: clip.visual)
+            let center = anchor.center(ofBox: box, margin: title.margin, canvas: size)
+            project.changeVisual(of: [id]) { visual in
+                visual.x = center.x
+                visual.y = center.y
+            }
+        }
+    }
+
+    /// Adds text at the playhead on a new track above the others, ready to type: in the middle, or at one of the
+    /// nine places.
+    func addTextAtPlayhead(at anchor: TitleAnchor = .center) {
+        addText(at: playback.currentTime, target: .new(at: project.tracks.count), anchor: anchor)
+    }
+
+    /// Adds text, ready to type, in the look of the title last changed so a run of titles matches without setting
+    /// each one: its font, color, readability, animation and margin.
+    func addText(at start: Time, target: TrackTarget, anchor: TitleAnchor = .center) {
+        var title = TitleStyle.centeredTitle.title
+        if let look = lookForNewText {
+            title.takeLook(of: look)
+            title.margin = look.margin
+        }
+        title.anchor = anchor
+        addTitle(title, at: start, target: target)
+    }
+
     /// Adds a title in that style at the playhead, on a new track above the others, ready to type over.
     func addTitleAtPlayhead(_ style: TitleStyle) {
-        addTitle(style, at: playback.currentTime, target: .new(at: project.tracks.count))
-        if let id = selection.first, selection.count == 1, project.clip(id)?.title != nil {
-            beginEditingTitle(id)
+        var title = style.title
+        title.anchor = style.anchor
+        addTitle(title, visual: style.visual, at: playback.currentTime, target: .new(at: project.tracks.count))
+    }
+
+    /// Adds a title on its place, selects it and starts typing into it. Text that comes in moves the playhead to
+    /// where it's all the way in: at its very start it's still unseen, so the preview would show nothing once the
+    /// typing ends.
+    private func addTitle(_ title: Title, visual: Visual = Visual(), at start: Time, target: TrackTarget) {
+        apply("Add Text") { project in
+            let id = project.addTitle(title, visual: visual, at: start, target: target).id
+            Self.placeTitles([id], in: &project)
+            selection = [id]
+        }
+        activeTab = .text
+        guard let id = selection.first, selection.count == 1, let clip = project.clip(id), clip.title != nil else { return }
+        if title.animationIn != .none, !playback.isPlaying {
+            let shown = clip.start + Time(seconds: TitleAnimation.duration)
+            if shown < clip.end { playback.seek(to: shown) }
+        }
+        beginEditingTitle(id)
+    }
+
+    /// The title whose look new text takes: the last one changed in the Text tab, or else the last on the timeline.
+    private var lookForNewText: Title? {
+        if let id = lastChangedTitle, let title = project.clip(id)?.title { return title }
+        return project.tracks.flatMap(\.clips).filter { $0.title != nil }.max { $0.start < $1.start }?.title
+    }
+
+    /// Moves text to where it was dragged in the preview: onto one of the nine places when it caught on one, which
+    /// it then keeps to, or anywhere else, where it stays.
+    func moveTitle(to visual: Visual, anchor: TitleAnchor?) {
+        let ids = pictureSelection.filter { project.clip($0)?.title != nil }
+        guard !ids.isEmpty else { return }
+        apply("Move") { project in
+            project.changeVisual(of: ids) { $0 = visual }
+            project.changeTitle(of: ids) { $0.anchor = anchor }
+            project.realignTitles(ids)
+            Self.placeTitles(ids, in: &project)
         }
     }
 
@@ -472,8 +566,10 @@ final class ProjectStore {
         guard !ids.isEmpty else { return }
         apply(name) { project in
             project.changeVisual(of: ids, change)
-            // Text lines up with the third of the canvas it's moved to.
+            // Text lines up with the third of the canvas it's moved to, and text kept to a place, scaled or turned,
+            // goes back onto it.
             project.realignTitles(ids)
+            Self.placeTitles(ids, in: &project)
         }
     }
 
@@ -483,19 +579,17 @@ final class ProjectStore {
         previewLook { $0.changeVisual(of: ids, change) }
     }
 
+    /// Adds an asset at the playhead on a new track above the others, as Add Text puts text.
+    func addAssetAtPlayhead(_ id: UUID) {
+        addClip(asset: id, at: playback.currentTime, target: .new(at: project.tracks.count))
+    }
+
     func addClip(asset id: UUID, at start: Time, target: TrackTarget) {
         apply("Add Clip") { project in
             if let clip = project.addClip(asset: id, at: start, target: target) {
                 selection = [clip.id]
             }
         }
-    }
-
-    func addTitle(_ style: TitleStyle, at start: Time, target: TrackTarget) {
-        apply("Add Text") { project in
-            selection = [project.addTitle(style.title, visual: style.visual, at: start, target: target).id]
-        }
-        activeTab = .text
     }
 
     func addBackground(_ fill: BackgroundFill, at start: Time, target: TrackTarget) {
@@ -1206,11 +1300,12 @@ final class ProjectStore {
 
     /// Shows a frame change while it's dragged.
     func previewFrame(_ change: (inout PictureFrame) -> Void) {
-        previewLook { project in
-            var frame = project.frame ?? PictureFrame()
-            change(&frame)
-            project.frame = frame
-        }
+        var preview = project
+        var frame = preview.frame ?? PictureFrame()
+        change(&frame)
+        preview.frame = frame
+        handlesPreview = preview
+        previewLook { $0 = preview }
     }
 
     /// Picks image files to use as wallpapers: each is kept in the wallpaper library for every project, and the

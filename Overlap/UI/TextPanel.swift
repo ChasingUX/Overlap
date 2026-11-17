@@ -1,72 +1,30 @@
 import AppKit
 import SwiftUI
 
-/// The Text tab. With a text clip selected: its font, weight, color, how it stands out from the picture, and how it
-/// comes in and goes out. The words are typed on the canvas, and the preview's handles place and size the text; its
-/// lines follow where it sits, lining up left in the canvas's left third, right in its right third. Otherwise, the title styles as small canvases with the text in place, to drag onto the timeline or
-/// click to add at the playhead, ready to type over.
+/// The Text tab. With a text clip selected: where it sits, from nine places, and how large; its font, weight and
+/// color; how it stands out from the picture; and how it comes in and goes out. The words are typed on the canvas.
+/// Its lines follow its place, lining up left on the left and right on the right. With no text selected, a button
+/// adds some at the playhead, ready to type.
 struct TextPanel: View {
     let store: ProjectStore
 
     var body: some View {
         if let clip = store.selectedClips.first, let title = clip.title {
             ClipPanel(title: "Text") {
-                TitleEditor(store: store, title: title)
+                TitleEditor(store: store, clip: clip, title: title)
                     .id(clip.id)
             }
         } else {
-            ClipPanel(title: "Text") {
-                PanelGroup(title: "Titles") {
-                    TitleStyleGrid(store: store)
-                }
-            }
+            PlaceholderPanel(icon: .text, title: "Add text", message: "Adds a title at the playhead, ready to type on the canvas.",
+                             action: (title: "Add Text", perform: { store.addTextAtPlayhead() }))
         }
-    }
-}
-
-/// The title styles two to a row, each drawn by the renderer the canvas uses, at the canvas's shape.
-private struct TitleStyleGrid: View {
-    let store: ProjectStore
-
-    private static let columns = Array(repeating: GridItem(.flexible(), spacing: 10, alignment: .top), count: 2)
-
-    var body: some View {
-        let canvas = store.project.canvas ?? Project.defaultCanvas
-        let size = CGSize(width: canvas.width, height: canvas.height)
-        LazyVGrid(columns: Self.columns, spacing: 12) {
-            ForEach(TitleStyle.allCases, id: \.self) { style in
-                VStack(alignment: .leading, spacing: 5) {
-                    Swatch(isRound: false, isSelected: false, name: style.name, action: { store.addTitleAtPlayhead(style) }) {
-                        if let image = TitleStyleGrid.picture(of: style, canvas: size) {
-                            Image(decorative: image, scale: 1).resizable()
-                        }
-                    }
-                    .aspectRatio(size.width / max(size.height, 1), contentMode: .fit)
-                    .onDrag { NSItemProvider(object: TimelineDrag.payload(for: style) as NSString) }
-                    .help("Click to add at the playhead, or drag onto the timeline")
-                    PanelLabel(style.name)
-                        .padding(.leading, 2)
-                }
-            }
-        }
-    }
-
-    /// Styles drawn once per canvas shape, at twice a tile's size.
-    @MainActor private static var pictures: [String: CGImage] = [:]
-
-    private static func picture(of style: TitleStyle, canvas: CGSize) -> CGImage? {
-        let key = "\(style.rawValue) \(Int(canvas.width))×\(Int(canvas.height))"
-        if let found = pictures[key] { return found }
-        let drawn = TitleRenderer.frame(for: style.title, visual: style.visual, canvas: canvas, height: 220, asTile: true)
-        if pictures.count > 48 { pictures.removeAll() }
-        pictures[key] = drawn
-        return drawn
     }
 }
 
 /// Every setting of the selected text clip.
 private struct TitleEditor: View {
     let store: ProjectStore
+    let clip: Clip
     let title: Title
 
     /// Set while the second animation row shows though both ends are the same, as just after it's switched on.
@@ -80,7 +38,33 @@ private struct TitleEditor: View {
 
     private var showsGoingOut: Bool { splitsAnimation || title.animationIn != title.animationOut }
 
+    /// Text drawn larger or smaller by its handles shows and sets the size it's seen at.
+    private var shownSize: Double { title.size * clip.visual.scale }
+    /// A margin only moves text on a corner or an edge.
+    private var usesMargin: Bool { title.anchor.map { $0 != .center } ?? false }
+
     var body: some View {
+        PanelGroup(title: "Position") {
+            HStack(spacing: 8) {
+                NinePointPicker(selected: title.anchor) { anchor in
+                    store.setTitle("Change Position") { $0.anchor = anchor }
+                }
+                .frame(width: PanelMetrics.boxHeight * 2 + 6, height: PanelMetrics.boxHeight * 2 + 6)
+                VStack(spacing: 6) {
+                    BoxSlider(title: "Size", value: shownSize, range: Title.sizeRange, format: { "\(Int($0.rounded()))" },
+                              onChange: { size in store.previewTitle { [scale = clip.visual.scale] in $0.size = size / scale } },
+                              onCommit: { size in store.setTitle("Change Size") { [scale = clip.visual.scale] in $0.size = size / scale } })
+                    BoxSlider(title: "Margin", value: title.margin, range: Title.marginRange,
+                              format: { "\(Int(($0 * 100).rounded()))%" }, defaultValue: Title.defaultMargin,
+                              onChange: { margin in store.previewTitle { $0.margin = margin } },
+                              onCommit: { margin in store.setTitle("Change Margin") { $0.margin = margin } })
+                        .disabled(!usesMargin)
+                        .opacity(usesMargin ? 1 : 0.45)
+                        .help(usesMargin ? "How far in from the canvas's edges the text sits" : "Choose a corner or an edge to set how far in the text sits")
+                }
+            }
+        }
+
         PanelGroup(title: "Title") {
             PanelCard {
                 MenuRow(title: "Font", value: TitleFont.name(of: title.fontFamily)) {
@@ -194,5 +178,55 @@ private struct TitleEditor: View {
 
     private static func plate(_ color: RGBA, alpha: Double) -> RGBA {
         RGBA(red: color.red, green: color.green, blue: color.blue, alpha: alpha)
+    }
+}
+
+/// Nine places for text in a small square: the corners, the middles of the edges, and the middle. The chosen one is a
+/// larger white dot. With none chosen, the text sits wherever it was dragged.
+private struct NinePointPicker: View {
+    let selected: TitleAnchor?
+    let onSelect: (TitleAnchor) -> Void
+
+    var body: some View {
+        Grid(horizontalSpacing: 0, verticalSpacing: 0) {
+            ForEach(-1...1, id: \.self) { row in
+                GridRow {
+                    ForEach(-1...1, id: \.self) { column in
+                        let anchor = TitleAnchor(column: column, row: row)
+                        AnchorDot(isSelected: anchor == selected) { onSelect(anchor) }
+                            .help(anchor.name)
+                            .accessibilityLabel(anchor.name)
+                    }
+                }
+            }
+        }
+        .padding(4)
+        .background(ControlBox())
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Position")
+    }
+}
+
+/// One of the nine places: a small gray dot that brightens under the pointer, and a slightly larger white one chosen.
+private struct AnchorDot: View {
+    let isSelected: Bool
+    let action: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            let side: CGFloat = isSelected ? 5 : isHovered ? 4 : 3
+            Circle()
+                .fill(Color.primary.opacity(isSelected ? 0.95 : isHovered ? 0.65 : 0.3))
+                .frame(width: side, height: side)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+        .animation(.easeOut(duration: 0.12), value: isSelected)
+        .animation(.easeOut(duration: 0.12), value: isHovered)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 }

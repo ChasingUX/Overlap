@@ -170,13 +170,79 @@ enum TitleWeight: String, Hashable, Sendable, Codable, CaseIterable {
 }
 
 /// How a title's lines line up, and which side stays put as its text gets wider or narrower. It isn't chosen: it
-/// follows where the title sits, left, middle or right third of the canvas.
+/// follows the side of the place the title keeps to, or else where it sits, left, middle or right third of the canvas.
 enum TitleAlignment: String, Hashable, Sendable, Codable, CaseIterable {
     case leading, center, trailing
 
     /// The alignment for a title centered at `x`, a share of the canvas width from its middle.
     init(position x: Double) {
         self = x < -1.0 / 6 ? .leading : x > 1.0 / 6 ? .trailing : .center
+    }
+}
+
+/// One of nine places a title can keep to: a corner, the middle of an edge, or the middle of the canvas. On a corner
+/// or an edge, the title's box sits its margin in from the canvas's edges, and stays there as its text changes.
+enum TitleAnchor: String, Hashable, Sendable, Codable, CaseIterable {
+    case topLeading, top, topTrailing, leading, center, trailing, bottomLeading, bottom, bottomTrailing
+
+    init(column: Int, row: Int) {
+        self = Self.allCases[(row.clamped(to: -1...1) + 1) * 3 + column.clamped(to: -1...1) + 1]
+    }
+
+    /// The nearest place to a point on the canvas, by the third of it the point falls in, across and down.
+    init(nearest point: CGPoint, canvas: CGSize) {
+        func third(_ value: CGFloat, of length: CGFloat) -> Int { value < length / 3 ? -1 : value > length * 2 / 3 ? 1 : 0 }
+        self.init(column: third(point.x, of: canvas.width), row: third(point.y, of: canvas.height))
+    }
+
+    private var index: Int { Self.allCases.firstIndex(of: self) ?? 4 }
+    /// -1 on the left, 0 in the middle, 1 on the right.
+    var column: Int { index % 3 - 1 }
+    /// -1 at the top, 0 in the middle, 1 at the bottom.
+    var row: Int { index / 3 - 1 }
+
+    var alignment: TitleAlignment { column < 0 ? .leading : column > 0 ? .trailing : .center }
+
+    var name: String {
+        let across = ["left", "", "right"][column + 1]
+        let down = ["Top", "", "Bottom"][row + 1]
+        switch (down.isEmpty, across.isEmpty) {
+        case (true, true): return "Middle"
+        case (true, false): return across.capitalized
+        case (false, true): return down
+        case (false, false): return "\(down) \(across)"
+        }
+    }
+
+    /// The margin in canvas pixels: a share of the canvas's shorter side, so it's the same down the sides as across
+    /// the top.
+    static func inset(_ margin: Double, canvas: CGSize) -> CGFloat {
+        CGFloat(margin) * min(canvas.width, canvas.height)
+    }
+
+    /// Where a box `size` pixels across sits here, as the offset of its middle from the canvas's middle, a share of
+    /// the canvas's width and height, as a `Visual` gives it.
+    func center(ofBox size: CGSize, margin: Double, canvas: CGSize) -> (x: Double, y: Double) {
+        let inset = Self.inset(margin, canvas: canvas)
+        let x = 0.5 - (inset + size.width / 2) / max(canvas.width, 1)
+        let y = 0.5 - (inset + size.height / 2) / max(canvas.height, 1)
+        return (Double(column) * x, Double(row) * y)
+    }
+
+    /// The point on the canvas, in pixels from its top left, that a title's matching corner, edge or middle sits on.
+    func point(margin: Double, canvas: CGSize) -> CGPoint {
+        let inset = Self.inset(margin, canvas: canvas)
+        return CGPoint(x: canvas.width / 2 + CGFloat(column) * (canvas.width / 2 - inset),
+                       y: canvas.height / 2 + CGFloat(row) * (canvas.height / 2 - inset))
+    }
+
+    /// The box a picture `size` pixels across takes on the canvas at a placement's scale and turn.
+    static func box(of size: CGSize, visual: Visual) -> CGSize {
+        let width = size.width * visual.scale
+        let height = size.height * visual.scale
+        let angle = visual.rotation * .pi / 180
+        return CGSize(width: abs(width * cos(angle)) + abs(height * sin(angle)),
+                      height: abs(width * sin(angle)) + abs(height * cos(angle)))
     }
 }
 
@@ -206,6 +272,15 @@ struct Title: Hashable, Sendable, Codable {
     var animationOut = TitleAnimation.fade
     /// A soft shadow under the letters, for reading over pictures without a plate.
     var shadow = false
+    /// The place on the canvas the title keeps to as it changes, or nil once it's dragged anywhere else.
+    var anchor: TitleAnchor?
+    /// How far in from the canvas's edges a title on a corner or an edge sits, as a share of the shorter side.
+    var margin = Title.defaultMargin
+
+    static let defaultMargin = 0.06
+    static let marginRange = 0.0...0.15
+    /// The sizes the Text tab's slider reaches; the preview's handles go further.
+    static let sizeRange = 16.0...240.0
 
     /// The plate a title gets when Plate is chosen and it has none yet.
     static let plate = RGBA(red: 0, green: 0, blue: 0, alpha: 0.55)
@@ -246,6 +321,8 @@ extension Title {
         animationIn = try container.decodeIfPresent(TitleAnimation.self, forKey: .animationIn) ?? .fade
         animationOut = try container.decodeIfPresent(TitleAnimation.self, forKey: .animationOut) ?? .fade
         shadow = try container.decodeIfPresent(Bool.self, forKey: .shadow) ?? false
+        anchor = try container.decodeIfPresent(TitleAnchor.self, forKey: .anchor)
+        margin = try container.decodeIfPresent(Double.self, forKey: .margin) ?? Self.defaultMargin
     }
 }
 
@@ -273,7 +350,7 @@ enum TitleFont {
     }
 }
 
-/// Ready-made titles, dragged from the Text tab onto the timeline or clicked to add at the playhead.
+/// Ready-made titles. New text starts as Centered; the others set up projects for checks and tests.
 enum TitleStyle: String, CaseIterable, Sendable {
     case centeredTitle, lowerThird, caption, boldIntro, endCard, callout
 
@@ -308,7 +385,17 @@ enum TitleStyle: String, CaseIterable, Sendable {
         }
     }
 
-    /// Where the style places its text.
+    /// The place the style's text keeps to.
+    var anchor: TitleAnchor {
+        switch self {
+        case .centeredTitle, .boldIntro, .endCard: .center
+        case .lowerThird: .bottomLeading
+        case .caption: .bottom
+        case .callout: .topTrailing
+        }
+    }
+
+    /// Where the style places its text, near its place before it's measured onto it.
     var visual: Visual {
         var visual = Visual()
         switch self {

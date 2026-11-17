@@ -13,7 +13,8 @@ for the one-time step macOS asks for. After that, Overlap updates itself.
 
 - **Timeline:** tracks of video, sound, images, titles and backgrounds. Trim, split, ripple delete, change speed
   with or without keeping pitch, fade in and out, and crossfade by overlapping two clips. Tracks can be muted,
-  soloed and locked.
+  soloed and locked. Click media in the Media tab to add it at the playhead, or drag it onto the timeline or the
+  canvas.
 - **Picture:** a canvas that follows the first video, or any size you drag its edges to in the preview, at the first
   video's frame rate. A background of a mesh gradient, a color, your own image or one of the Mac's aerial wallpapers,
   which frames the picture with padding, a shadow and rounded corners. Each picture can be moved, scaled, rotated,
@@ -21,8 +22,10 @@ for the one-time step macOS asks for. After that, Overlap updates itself.
 - **Zooms:** right-click a video or image clip and choose Add Zoom. Zooms sit in a lane above the clip's track; drag a
   zoom's region in the preview, set its level, and choose Smooth or Dynamic easing and how much motion blur. Zooms
   close together pan from one region to the next, and recordings stay sharp because zooms use the source's pixels.
-- **Titles:** ready-made styles (centered, lower third, caption, intro, end card, callout), typed, placed and sized
-  on the canvas, with a shadow or plate to read over the picture, animations in and out, and one look for all.
+- **Titles:** added at the playhead or from a right-click and typed on the canvas. Each can keep to one of nine
+  places, a corner, the middle of an edge or the middle, a margin in from the edges as its text and size change,
+  or sit wherever it's dragged. A shadow or plate reads over the picture, with animations in and out and one look
+  for all; new text starts in the last title's look.
 - **Sound:** per-clip volume, Isolate voice to take out background noise, and a master volume. Exports can be
   brought to the loudness streaming services play at.
 - **Loops:** finds where a video repeats, or the best places it can loop, and trims a clip to a loop.

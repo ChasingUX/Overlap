@@ -113,15 +113,18 @@ private struct RailTooltip: View {
     }
 }
 
-/// The icon at the top of an empty state, large and gray.
+/// The icon at the top of an empty state: small and gray, on a quiet rounded tile, as the panel's own tiles are.
 struct EmptyStateIcon: View {
     let icon: AppIcon
 
     var body: some View {
         icon.image
-            .font(.system(size: 26))
+            .font(.system(size: 15))
             .foregroundStyle(.secondary)
-            .padding(.bottom, 2)
+            .frame(width: 32, height: 32)
+            .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.primary.opacity(0.07)))
+            .padding(.bottom, 8)
+            .accessibilityHidden(true)
     }
 }
 
@@ -182,8 +185,8 @@ struct ClipPanel<Content: View>: View {
     }
 }
 
-/// What a tab shows with nothing to work on, in the middle of the panel: the tab's icon, a title and a line or two
-/// saying what to do, wrapped into even lines.
+/// What a tab shows with nothing to work on, in the middle of the panel: the tab's icon on a small tile, a title and
+/// a line or two saying what to do, wrapped into even lines.
 struct PlaceholderPanel: View {
     let icon: AppIcon
     let title: String

@@ -74,6 +74,10 @@ final class TransformOverlay: NSView {
     private var guides: (vertical: [CGFloat], horizontal: [CGFloat]) = ([], [])
     /// Whether the drag is resting on a snap, so the trackpad taps once, as it catches.
     private var isSnapped = false
+    /// The place dragged text has caught on, which it keeps to once let go there.
+    private var caughtAnchor: TitleAnchor?
+    /// How near, in view points, dragged text's middle has to come to where it would sit on a place to catch on it.
+    private static let anchorReach: CGFloat = 12
     private var titleSizes: [Title: CGSize] = [:]
 
     /// The canvas being resized from one edge or corner: which way each side moves (−1 the left or top edge, 1 the
@@ -367,6 +371,9 @@ final class TransformOverlay: NSView {
         outline(points, dashed: false)
         // Over the outline, so a guide along the picture's own edge shows, and under the handles.
         drawGuides()
+        drawAnchors(for: clip)
+        // Moving text shows only its outline, so the place it catches on isn't hidden under a handle.
+        if case .move? = drag, clip.title != nil { return }
         let top = CGPoint(x: (points[0].x + points[1].x) / 2, y: (points[0].y + points[1].y) / 2)
         let rotation = rotationHandle(points)
         let stem = NSBezierPath()
@@ -378,6 +385,23 @@ final class TransformOverlay: NSView {
         dot(at: rotation)
         for corner in points {
             square(at: corner)
+        }
+    }
+
+    /// While text is dragged, the nine places it can catch on, where its matching corner, edge or middle would sit:
+    /// small dots, and a larger one where it has caught.
+    private func drawAnchors(for clip: Clip) {
+        guard case .move? = drag, let title = clip.title else { return }
+        for anchor in TitleAnchor.allCases {
+            let point = view(anchor.point(margin: title.margin, canvas: canvas))
+            let isCaught = anchor == caughtAnchor
+            let radius: CGFloat = isCaught ? 2.5 : 1.5
+            let rect = CGRect(x: point.x - radius, y: point.y - radius, width: radius * 2, height: radius * 2)
+            // A dark ring keeps the dots readable over light pictures.
+            NSColor.black.withAlphaComponent(0.35).setFill()
+            NSBezierPath(ovalIn: rect.insetBy(dx: -0.75, dy: -0.75)).fill()
+            NSColor.white.withAlphaComponent(isCaught ? 1 : 0.7).setFill()
+            NSBezierPath(ovalIn: rect).fill()
         }
     }
 
@@ -912,7 +936,15 @@ final class TransformOverlay: NSView {
             visual = start
             visual.x = start.x + (point.x - from.x) / canvas.width
             visual.y = start.y + (point.y - from.y) / canvas.height
-            if snaps { visual = snappedMove(visual, of: clip) }
+            caughtAnchor = nil
+            // Text catches on the nine places before any line.
+            if snaps, let title = clip.title, let caught = caught(visual, title: title, of: clip) {
+                visual.x = caught.x
+                visual.y = caught.y
+                caughtAnchor = caught.anchor
+            } else if snaps {
+                visual = snappedMove(visual, of: clip)
+            }
         case let .scale(start, anchor, from):
             // The opposite corner stays put, as in other design apps; Option scales around the middle instead.
             let pivot = event.modifierFlags.contains(.option) ? center(of: start) : anchor
@@ -936,7 +968,7 @@ final class TransformOverlay: NSView {
             visual.crop = cropped(start, edge: edge, to: point, clip: clip)
         }
         // A tap on a Force Touch trackpad as the picture catches on a line or a quarter turn, as sliders do.
-        let snappedNow = !guides.vertical.isEmpty || !guides.horizontal.isEmpty || rotationCaught
+        let snappedNow = !guides.vertical.isEmpty || !guides.horizontal.isEmpty || rotationCaught || caughtAnchor != nil
         if snappedNow, !isSnapped {
             NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
         }
@@ -989,6 +1021,7 @@ final class TransformOverlay: NSView {
             draft = nil
             guides = ([], [])
             isSnapped = false
+            caughtAnchor = nil
             needsDisplay = true
         }
         guard let drag, let draft, draft.visual != state?.project.clip(draft.id)?.visual else { return }
@@ -999,7 +1032,28 @@ final class TransformOverlay: NSView {
         case .crop: "Crop"
         }
         let visual = draft.visual
+        // Moved text keeps to the place it was let go on, or to none.
+        if case .move = drag, state?.project.clip(draft.id)?.title != nil {
+            store.moveTitle(to: visual, anchor: caughtAnchor)
+            return
+        }
         store.setVisual(name) { $0 = visual }
+    }
+
+    /// The place dragged text catches on: the nearest one where it would sit, its margin in from the edges, within
+    /// reach of where it's been dragged.
+    private func caught(_ visual: Visual, title: Title, of clip: Clip) -> (anchor: TitleAnchor, x: Double, y: Double)? {
+        guard let size = fullSize(of: clip) else { return nil }
+        let box = TitleAnchor.box(of: size, visual: visual)
+        let reach = Self.anchorReach / max(0.001, contentScale)
+        let here = center(of: visual)
+        let spots = TitleAnchor.allCases.map { anchor in
+            let spot = anchor.center(ofBox: box, margin: title.margin, canvas: canvas)
+            let point = CGPoint(x: canvas.width / 2 + spot.x * canvas.width, y: canvas.height / 2 + spot.y * canvas.height)
+            return (anchor: anchor, x: spot.x, y: spot.y, gap: hypot(point.x - here.x, point.y - here.y))
+        }
+        guard let nearest = spots.filter({ $0.gap <= reach }).min(by: { $0.gap < $1.gap }) else { return nil }
+        return (nearest.anchor, nearest.x, nearest.y)
     }
 
     // MARK: Aiming a zoom
@@ -1080,10 +1134,21 @@ final class TransformOverlay: NSView {
     // MARK: Right-click menu
 
     /// A right-click on a picture selects it and offers what dragging can't do in one go: cropping, taking the crop
-    /// off, and putting it back in the middle at full size, unturned. Text offers typing into it instead.
+    /// off, and putting it back in the middle at full size, unturned. Text offers typing into it instead. Anywhere on
+    /// the canvas but text, it offers adding text at the nearest of the nine places.
     override func menu(for event: NSEvent) -> NSMenu? {
-        guard titleEditor == nil, canvasResize == nil, drag == nil,
-              let (clip, _) = target(at: convert(event.locationInWindow, from: nil)) else { return nil }
+        let location = convert(event.locationInWindow, from: nil)
+        guard titleEditor == nil, canvasResize == nil, drag == nil else { return nil }
+        let spot = TitleAnchor(nearest: canvasPoint(location), canvas: canvas)
+        let addText = NSMenuItem(title: "Add Text", action: #selector(contextAddText(_:)), keyEquivalent: "")
+        addText.target = self
+        addText.representedObject = spot.rawValue
+        guard let (clip, _) = target(at: location) else {
+            guard contentRect.contains(location) else { return nil }
+            let menu = NSMenu()
+            menu.addItem(addText)
+            return menu
+        }
         let isCropping = state?.isCropping == true && state?.handlesClip == clip.id
         if state?.selection != [clip.id] { store.select([clip.id]) }
         store.handlesClip = clip.id
@@ -1101,6 +1166,7 @@ final class TransformOverlay: NSView {
             add("Edit Text", #selector(contextEditText(_:)))
         } else {
             let visual = clip.visual
+            menu.addItem(addText)
             // A zoom starts at the playhead, the moment the preview shows.
             add("Add Zoom", #selector(contextAddZoom(_:)))
             menu.addItem(.separator())
@@ -1111,6 +1177,11 @@ final class TransformOverlay: NSView {
                 enabled: visual.x != 0 || visual.y != 0 || visual.scale != 1 || visual.rotation != 0)
         }
         return menu
+    }
+
+    @objc private func contextAddText(_ item: NSMenuItem) {
+        let anchor = (item.representedObject as? String).flatMap(TitleAnchor.init(rawValue:)) ?? .center
+        store.addTextAtPlayhead(at: anchor)
     }
 
     @objc private func contextAddZoom(_ item: NSMenuItem) {
@@ -1417,6 +1488,36 @@ extension TransformOverlay {
         await whileHeld()
         send(.leftMouseUp, end)
         return lit
+    }
+
+    /// Drags the selected text toward where it would sit on `anchor`, stopping `short` view points before it, calls
+    /// `whileHeld`, then lets go. Returns the place it had caught on while held.
+    func debugDragText(toward anchor: TitleAnchor, short: CGFloat, whileHeld: () async -> Void) async -> TitleAnchor?? {
+        guard let id = state?.selection.first, let clip = visibleClips.first(where: { $0.id == id }), let title = clip.title,
+              let size = fullSize(of: clip), let window else { return nil }
+        let start = view(center(of: clip.visual))
+        let spot = anchor.center(ofBox: TitleAnchor.box(of: size, visual: clip.visual), margin: title.margin, canvas: canvas)
+        let goal = view(CGPoint(x: canvas.width / 2 + spot.x * canvas.width, y: canvas.height / 2 + spot.y * canvas.height))
+        let length = max(1, hypot(goal.x - start.x, goal.y - start.y))
+        let end = CGPoint(x: goal.x - (goal.x - start.x) / length * short, y: goal.y - (goal.y - start.y) / length * short)
+        let send = { (type: NSEvent.EventType, point: CGPoint) in
+            guard let event = NSEvent.mouseEvent(with: type, location: self.convert(point, to: nil), modifierFlags: [], timestamp: 0,
+                                                 windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)
+            else { return }
+            switch type {
+            case .leftMouseDown: self.mouseDown(with: event)
+            case .leftMouseDragged: self.mouseDragged(with: event)
+            default: self.mouseUp(with: event)
+            }
+        }
+        send(.leftMouseDown, start)
+        send(.leftMouseDragged, CGPoint(x: (start.x + end.x) / 2, y: (start.y + end.y) / 2))
+        send(.leftMouseDragged, end)
+        let held = caughtAnchor
+        display()
+        await whileHeld()
+        send(.leftMouseUp, end)
+        return .some(held)
     }
 
     var debugCanvasRect: CGRect { canvasRect }

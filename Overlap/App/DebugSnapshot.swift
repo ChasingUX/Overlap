@@ -826,6 +826,106 @@ enum DebugSnapshot {
                 ]
             }
 
+            // OVERLAP_SNAPSHOT_TEXTPLACE=<place>[,drag] adds a two-line title at 2 s on a plate, as the Text tab's Add
+            // Text button does, then puts it on that place (topLeading … bottomTrailing) or, with ",drag", drags it in
+            // the preview to just short of it, saving <prefix>-drag.png while it's held. It reports where it ended up.
+            var textPlaceReport: [String: Any] = [:]
+            if let value = environment["OVERLAP_SNAPSHOT_TEXTPLACE"], let store = document?.store,
+               let anchor = TitleAnchor(rawValue: String(value.split(separator: ",")[0])) {
+                store.playback.seek(to: Time(seconds: 2))
+                try? await Task.sleep(for: .milliseconds(400))
+                store.addTextAtPlayhead()
+                // ",typing" leaves the new text being typed into as its place is chosen, as just after Add Text;
+                // ",clicked" ends the typing, with new words, just before choosing it, as clicking a dot in the panel does.
+                let typing = value.hasSuffix(",typing")
+                if typing {
+                    try? await Task.sleep(for: .milliseconds(800))
+                } else if value.hasSuffix(",clicked") {
+                    try? await Task.sleep(for: .milliseconds(800))
+                    store.endEditingTitle(text: "Jordan Lee")
+                } else {
+                    store.endEditingTitle(text: "Jordan Lee\nProduct designer")
+                    store.setTitle("Debug") { title in
+                        title.readability = .plate
+                        title.size = 44
+                        title.weight = .semibold
+                    }
+                    try? await Task.sleep(for: .milliseconds(500))
+                }
+                var held: TitleAnchor??
+                if value.hasSuffix(",drag") {
+                    if let window = NSApplication.shared.windows.first(where: \.isVisible),
+                       let overlay = window.contentView.flatMap({ find(TransformOverlay.self, in: $0) }) {
+                        held = await overlay.debugDragText(toward: anchor, short: 6) {
+                            if let view = window.contentView?.superview, let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+                                view.cacheDisplay(in: view.bounds, to: bitmap)
+                                try? bitmap.representation(using: .png, properties: [:])?.write(to: URL(filePath: "\(prefix)-drag.png"))
+                            }
+                        }
+                    }
+                } else {
+                    store.setTitle("Debug") { $0.anchor = anchor }
+                    // ",margin" then drags the Margin slider to 14% and holds it there, unapplied.
+                    if value.hasSuffix(",margin") {
+                        try? await Task.sleep(for: .milliseconds(400))
+                        store.previewTitle { $0.margin = 0.14 }
+                    }
+                }
+                // Past the fade in, for the frame; ",clicked" stays where Add Text left the playhead.
+                if !value.hasSuffix(",clicked") { store.playback.seek(to: Time(seconds: 3)) }
+                try? await Task.sleep(for: .milliseconds(800))
+                // How much of the text's box the preview shows lit, from the frame it's displaying.
+                @MainActor func shown() -> Double {
+                    guard let clip = store.selectedClips.first, let title = clip.title, let canvas = store.project.canvas,
+                          let preview = NSApplication.shared.windows.first(where: \.isVisible)?.contentView.flatMap({ find(PlayerLayerView.self, in: $0) }),
+                          let buffer = preview.playerLayer.displayedPixelBuffer() else { return -1 }
+                    let size = CGSize(width: canvas.width, height: canvas.height)
+                    guard let image = TitleRenderer.image(for: title, canvas: size) else { return -1 }
+                    let box = TitleAnchor.box(of: CGSize(width: image.width, height: image.height), visual: clip.visual)
+                    CVPixelBufferLockBaseAddress(buffer, .readOnly)
+                    defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
+                    guard let base = CVPixelBufferGetBaseAddress(buffer) else { return -1 }
+                    let width = CVPixelBufferGetWidth(buffer), height = CVPixelBufferGetHeight(buffer)
+                    let row = CVPixelBufferGetBytesPerRow(buffer)
+                    let sx = Double(width) / size.width, sy = Double(height) / size.height
+                    let midX = (size.width / 2 + clip.visual.x * size.width) * sx, midY = (size.height / 2 + clip.visual.y * size.height) * sy
+                    var lit = 0, all = 0
+                    for y in stride(from: Int(midY - box.height * sy / 2), to: Int(midY + box.height * sy / 2), by: 2) where y >= 0 && y < height {
+                        for x in stride(from: Int(midX - box.width * sx / 2), to: Int(midX + box.width * sx / 2), by: 2) where x >= 0 && x < width {
+                            let pixel = base.advanced(by: y * row + x * 4).assumingMemoryBound(to: UInt8.self)
+                            all += 1
+                            if Int(pixel[0]) + Int(pixel[1]) + Int(pixel[2]) > 600 { lit += 1 }
+                        }
+                    }
+                    return all == 0 ? 0 : (Double(lit) / Double(all) * 1000).rounded() / 1000
+                }
+                var shownAfter: [String: Double] = ["placed": shown()]
+                // A rebuilt item can take a moment to put up its first frame.
+                if shownAfter["placed"] == -1 {
+                    try? await Task.sleep(for: .milliseconds(1500))
+                    shownAfter["placedLater"] = shown()
+                }
+                if typing {
+                    store.endEditingTitle(text: nil)
+                    try? await Task.sleep(for: .milliseconds(800))
+                    shownAfter["typingEnded"] = shown()
+                }
+                textPlaceReport["shown"] = shownAfter
+                let clip = store.selectedClips.first
+                var handlesX = "none"
+                if let id = clip?.id, let x = store.handlesPreview?.clip(id)?.visual.x { handlesX = String(x) }
+                textPlaceReport = textPlaceReport.merging([
+                    "anchor": clip?.title?.anchor?.rawValue ?? "none",
+                    "caughtWhileHeld": held.map { $0?.rawValue ?? "none" } ?? "not dragged",
+                    "alignment": clip?.title?.alignment.rawValue ?? "",
+                    "x": clip?.visual.x ?? 0, "y": clip?.visual.y ?? 0,
+                    "activeTab": store.activeTab.title,
+                    "handlesX": handlesX,
+                    "editing": store.editingTitleClip != nil,
+                    "hidden": store.playback.plan?.current.hiddenClip != nil,
+                ]) { $1 }
+            }
+
             // OVERLAP_SNAPSHOT_CROSSFADE=video first puts a second copy of the first video just after it, on its track.
             if environment["OVERLAP_SNAPSHOT_CROSSFADE"] == "video", let store = document?.store,
                let track = store.project.tracks.first(where: { track in track.clips.contains { store.project.asset($0.assetID)?.kind == .video } }),
@@ -1044,6 +1144,43 @@ enum DebugSnapshot {
                 send(.leftMouseUp, edge.minY - 100)
             }
 
+            // OVERLAP_SNAPSHOT_DROPASSET=1 opens the Media tab and saves each asset's drag thumbnail as <prefix>-drag-<n>.png,
+            // then holds the first video over the preview at 1 s, saving <prefix>-droptarget.png, and drops it there.
+            var dropReport: [String: Any] = [:]
+            if environment["OVERLAP_SNAPSHOT_DROPASSET"] != nil, let store = document?.store,
+               let window = NSApplication.shared.windows.first(where: \.isVisible),
+               let preview = window.contentView.flatMap({ find(PlayerLayerView.self, in: $0) }) {
+                store.activeTab = .media
+                try? await Task.sleep(for: .milliseconds(400))
+                var sizes: [[Int]] = []
+                for (index, asset) in store.project.assets.filter(\.isListedInMedia).enumerated() {
+                    guard let image = AssetDragPreview.debugImage(of: asset, store: store) else { continue }
+                    sizes.append([image.width, image.height])
+                    try? NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])?
+                        .write(to: URL(filePath: "\(prefix)-drag-\(index).png"))
+                }
+                dropReport["thumbnailSizes"] = sizes
+                if let asset = store.project.assets.first(where: { $0.kind == .video }) {
+                    let before = store.project.tracks.count
+                    store.playback.seek(to: Time(seconds: 1))
+                    try? await Task.sleep(for: .milliseconds(400))
+                    preview.debugDrop(asset.id) {
+                        if let view = window.contentView?.superview, let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+                            view.cacheDisplay(in: view.bounds, to: bitmap)
+                            try? bitmap.representation(using: .png, properties: [:])?.write(to: URL(filePath: "\(prefix)-droptarget.png"))
+                        }
+                    }
+                    try? await Task.sleep(for: .milliseconds(600))
+                    let added = store.selectedClips.first
+                    dropReport = dropReport.merging([
+                        "tracksBefore": before, "tracksAfter": store.project.tracks.count,
+                        "addedAsset": added?.assetID == asset.id, "addedStart": added?.start.seconds ?? -1,
+                        "onTopTrack": store.project.tracks.last?.clips.contains { $0.id == added?.id } ?? false,
+                        "targetedAfter": preview.isDropTargeted,
+                    ]) { $1 }
+                }
+            }
+
             // OVERLAP_SNAPSHOT_PANELEND=1 scrolls the panel to its end before the captures below.
             if environment["OVERLAP_SNAPSHOT_PANELEND"] != nil, let content = NSApplication.shared.windows.first(where: \.isVisible)?.contentView {
                 func scrollViews(in view: NSView) -> [NSScrollView] {
@@ -1100,6 +1237,8 @@ enum DebugSnapshot {
                     "resizeHeights": resizeHeights,
                     "editTimes": editTimes,
                     "crossfade": crossfadeReport,
+                    "textPlace": textPlaceReport,
+                    "dropAsset": dropReport,
                     "dragTarget": dragSummary,
                     "menu": menuLines,
                     "moveDisplay": moveDisplay,

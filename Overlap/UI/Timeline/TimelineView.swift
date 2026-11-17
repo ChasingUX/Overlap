@@ -72,7 +72,6 @@ final class TimelineView: NSView {
     private enum DropContent {
         case asset(Asset)
         case files([URL])
-        case title(TitleStyle)
         case fill(BackgroundFill)
     }
 
@@ -1409,6 +1408,12 @@ final class TimelineView: NSView {
             menu.addItem(menuItem("Delete", #selector(contextDelete), key: Self.deleteKey, modifiers: []))
             menu.addItem(menuItem("Delete and Close Gap", #selector(contextRippleDelete), key: Self.deleteKey, modifiers: .shift))
             menu.addItem(.separator())
+        } else {
+            // An empty stretch of a track takes text, starting where the click was.
+            let add = menuItem("Add Text", #selector(contextAddText(_:)))
+            add.representedObject = TextRequest(track: track.id, time: time(atX: point.x))
+            menu.addItem(add)
+            menu.addItem(.separator())
         }
 
         for (title, flag, isOn) in [("Mute Track", \Track.isMuted, track.isMuted), ("Solo Track", \Track.isSoloed, track.isSoloed), ("Lock Track", \Track.isLocked, track.isLocked)] {
@@ -1418,6 +1423,17 @@ final class TimelineView: NSView {
             menu.addItem(item)
         }
         return menu
+    }
+
+    /// Where text added from the right-click menu goes.
+    private struct TextRequest {
+        let track: UUID
+        let time: Time
+    }
+
+    @objc private func contextAddText(_ item: NSMenuItem) {
+        guard let request = item.representedObject as? TextRequest else { return }
+        store.addText(at: request.time, target: .existing(request.track))
     }
 
     private final class TrackFlagRequest: NSObject {
@@ -1619,7 +1635,6 @@ final class TimelineView: NSView {
         let pasteboard = info.draggingPasteboard
         if let string = pasteboard.string(forType: .string) {
             if let id = TimelineDrag.assetID(from: string), let asset = project.asset(id) { return .asset(asset) }
-            if let style = TimelineDrag.titleStyle(from: string) { return .title(style) }
             if let fill = TimelineDrag.fill(from: string) { return .fill(fill) }
         }
         let urls = (pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? [])
@@ -1639,9 +1654,6 @@ final class TimelineView: NSView {
         switch content {
         case let .asset(asset):
             clip = Clip(assetID: asset.id, start: .zero, sourceStart: .zero, duration: asset.kind == .image ? Clip.stillDuration : asset.duration)
-        case let .title(style):
-            clip = Clip(assetID: Clip.noAsset, start: .zero, sourceStart: .zero, duration: Clip.stillDuration)
-            clip.title = style.title
         case let .fill(fill):
             clip = Clip(assetID: Clip.noAsset, start: .zero, sourceStart: .zero, duration: Clip.stillDuration)
             clip.fill = fill
@@ -1683,8 +1695,6 @@ final class TimelineView: NSView {
             store.addClip(asset: asset.id, at: dragPreview.clip.start, target: dragPreview.target)
         case let .files(urls):
             store.importFiles(urls, placement: (dragPreview.clip.start, dragPreview.target))
-        case let .title(style):
-            store.addTitle(style, at: dragPreview.clip.start, target: dragPreview.target)
         case let .fill(fill):
             store.addBackground(fill, at: dragPreview.clip.start, target: dragPreview.target)
         }

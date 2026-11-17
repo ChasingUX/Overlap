@@ -439,7 +439,7 @@ struct TitleLookTests {
         #expect(store.project.tracks.flatMap(\.clips).compactMap(\.title).first?.text == "Jesse · Design")
     }
 
-    @Test func alignmentFollowsWhereTheTitleSits() {
+    @Test func alignmentFollowsWhereTheTitleSits() throws {
         #expect(TitleAlignment(position: -0.38) == .leading)
         #expect(TitleAlignment(position: 0.1) == .center)
         #expect(TitleAlignment(position: 0.33) == .trailing)
@@ -449,9 +449,13 @@ struct TitleLookTests {
             store.endEditingTitle(text: nil)
             #expect(store.selectedClips.first?.title?.alignment == alignment)
         }
-        // Moving the callout into the left third lines it up on the left.
-        store.setVisual("Move") { $0.x = -0.3 }
+        // Dragging the callout off its place into the left third frees it and lines it up on the left.
+        var moved = try #require(store.selectedClips.first?.visual)
+        moved.x = -0.3
+        store.moveTitle(to: moved, anchor: nil)
         #expect(store.selectedClips.first?.title?.alignment == .leading)
+        #expect(store.selectedClips.first?.title?.anchor == nil)
+        #expect(store.selectedClips.first?.visual.x == -0.3)
     }
 
     @Test func aTitleOnTheLeftKeepsItsLeftEdgeAsItsTextGrows() throws {
@@ -481,6 +485,133 @@ struct TitleLookTests {
         }
         #expect(TitleFont.name(of: TitleFont.serif) == "New York")
         #expect(TitleFont.name(of: "") == "System")
+    }
+}
+
+/// Text kept to one of nine places on the canvas: where each sits, and how it stays there as it changes.
+@MainActor
+struct TitlePlacementTests {
+    func makeStore() -> ProjectStore {
+        ProjectStore(mediaDirectory: FileManager.default.temporaryDirectory.appending(path: UUID().uuidString))
+    }
+
+    /// The selected text's box on the canvas, in pixels from its top left.
+    func box(in store: ProjectStore) throws -> CGRect {
+        let canvas = try #require(store.project.canvas)
+        let size = CGSize(width: canvas.width, height: canvas.height)
+        let clip = try #require(store.selectedClips.first)
+        let title = try #require(clip.title)
+        let image = try #require(TitleRenderer.image(for: title, canvas: size))
+        let box = TitleAnchor.box(of: CGSize(width: image.width, height: image.height), visual: clip.visual)
+        let center = CGPoint(x: size.width / 2 + clip.visual.x * size.width, y: size.height / 2 + clip.visual.y * size.height)
+        return CGRect(x: center.x - box.width / 2, y: center.y - box.height / 2, width: box.width, height: box.height)
+    }
+
+    @Test func thePlacesAndTheirSides() {
+        let canvas = CGSize(width: 1920, height: 1080)
+        #expect(TitleAnchor(column: -1, row: 1) == .bottomLeading)
+        #expect(TitleAnchor(nearest: CGPoint(x: 1800, y: 100), canvas: canvas) == .topTrailing)
+        #expect(TitleAnchor(nearest: CGPoint(x: 960, y: 540), canvas: canvas) == .center)
+        #expect(TitleAnchor.bottomLeading.alignment == .leading && TitleAnchor.top.alignment == .center)
+        #expect(TitleAnchor.bottomTrailing.name == "Bottom right" && TitleAnchor.leading.name == "Left" && TitleAnchor.center.name == "Middle")
+        // The margin is a share of the shorter side, the same in from every edge.
+        #expect(TitleAnchor.bottomLeading.point(margin: 0.1, canvas: canvas) == CGPoint(x: 108, y: 972))
+        let spot = TitleAnchor.topTrailing.center(ofBox: CGSize(width: 400, height: 100), margin: 0.1, canvas: canvas)
+        #expect(abs(spot.x - (0.5 - (108 + 200) / 1920.0)) < 1e-9)
+        #expect(abs(spot.y - -(0.5 - (108 + 50) / 1080.0)) < 1e-9)
+    }
+
+    @Test func choosingAPlacePutsTheTextItsMarginIn() throws {
+        let store = makeStore()
+        store.addTitleAtPlayhead(.centeredTitle)
+        store.endEditingTitle(text: nil)
+        store.setTitle("Change Position") { $0.anchor = .bottomLeading }
+        let inset = Title.defaultMargin * 1080
+        var placed = try box(in: store)
+        #expect(abs(placed.minX - inset) < 1 && abs(placed.maxY - (1080 - inset)) < 1)
+        #expect(store.selectedClips.first?.title?.alignment == .leading)
+
+        // It grows away from its corner as lines are added, and keeps to it as its margin changes.
+        store.endEditingTitle(text: "A much longer title\nOn two lines")
+        let id = try #require(store.selection.first)
+        store.beginEditingTitle(id)
+        store.endEditingTitle(text: "A much longer title\nOn two lines\nAnd a third")
+        placed = try box(in: store)
+        #expect(abs(placed.minX - inset) < 1 && abs(placed.maxY - (1080 - inset)) < 1)
+        store.setTitle("Change Margin") { $0.margin = 0.1 }
+        placed = try box(in: store)
+        #expect(abs(placed.minX - 108) < 1 && abs(placed.maxY - 972) < 1)
+
+        // A larger size grows it up and to the right, still on its corner.
+        store.setTitle("Change Size") { $0.size = 140 }
+        placed = try box(in: store)
+        #expect(abs(placed.minX - 108) < 1 && abs(placed.maxY - 972) < 1)
+    }
+
+    @Test func placedTextFollowsTheCanvas() throws {
+        let store = makeStore()
+        store.addTitleAtPlayhead(.callout)
+        store.endEditingTitle(text: nil)
+        store.resizeCanvas(to: CGRect(x: 0, y: 0, width: 1080, height: 1080))
+        let placed = try box(in: store)
+        let inset = Title.defaultMargin * 1080
+        #expect(abs(placed.maxX - (1080 - inset)) < 1 && abs(placed.minY - inset) < 1)
+    }
+
+    @Test func newTextTakesTheLastLook() throws {
+        let store = makeStore()
+        store.addTitleAtPlayhead(.lowerThird)
+        store.endEditingTitle(text: nil)
+        store.setTitle("Change Font") { $0.fontFamily = TitleFont.mono }
+        store.setTitle("Change Margin") { $0.margin = 0.1 }
+        store.addTextAtPlayhead(at: .top)
+        let title = try #require(store.selectedClips.first?.title)
+        #expect(store.editingTitleClip == store.selection.first)
+        #expect(title.text == "Title" && title.anchor == .top)
+        #expect(title.fontFamily == TitleFont.mono && title.readability == .plate && title.animationIn == .slide)
+        #expect(title.margin == 0.1)
+        #expect(abs(try box(in: store).minY - 108) < 1)
+    }
+
+    @Test func newTextLeavesThePlayheadWhereItsAllTheWayIn() throws {
+        let store = makeStore()
+        store.playback.seek(to: Time(seconds: 4))
+        store.addTextAtPlayhead()
+        let clip = try #require(store.selectedClips.first)
+        // It starts where the playhead was, and the playhead waits until it has faded in.
+        #expect(clip.start == Time(seconds: 4))
+        #expect(store.playback.currentTime == Time(seconds: 4 + TitleAnimation.duration))
+
+        // Text that doesn't come in leaves the playhead where it is.
+        store.endEditingTitle(text: nil)
+        store.setTitle("Change Animation") { $0.animationIn = .none }
+        store.playback.seek(to: Time(seconds: 12))
+        store.addTextAtPlayhead()
+        #expect(store.playback.currentTime == Time(seconds: 12))
+    }
+
+    @Test func theHandlesFollowASliderAsItsDragged() throws {
+        let store = makeStore()
+        store.addTitleAtPlayhead(.lowerThird)
+        store.endEditingTitle(text: nil)
+        let id = try #require(store.selection.first)
+        let before = try #require(store.project.clip(id)?.visual.x)
+        store.previewTitle { $0.margin = 0.12 }
+        // The project waits for the release; what the handles are drawn from moves now.
+        #expect(store.project.clip(id)?.visual.x == before)
+        let previewed = try #require(store.handlesPreview?.clip(id)?.visual.x)
+        #expect(previewed > before)
+        store.setTitle("Change Margin") { $0.margin = 0.12 }
+        #expect(store.handlesPreview == nil)
+        #expect(store.project.clip(id)?.visual.x == previewed)
+    }
+
+    @Test func titlesSavedBeforePlacesOpenWhereTheyWere() throws {
+        var json = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(Title(text: "Old"))) as? [String: Any])
+        json.removeValue(forKey: "margin")
+        json.removeValue(forKey: "anchor")
+        let title = try JSONDecoder().decode(Title.self, from: JSONSerialization.data(withJSONObject: json))
+        #expect(title.anchor == nil && title.margin == Title.defaultMargin)
     }
 }
 

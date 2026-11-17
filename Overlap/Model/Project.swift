@@ -484,10 +484,15 @@ extension Project {
     }
 
     /// Lines text clips up with where they now sit, after they've been moved.
+    /// Text clips that keep to one of the nine places on the canvas.
+    var anchoredTitleIDs: Set<UUID> {
+        Set(tracks.flatMap(\.clips).filter { $0.title?.anchor != nil }.map(\.id))
+    }
+
     mutating func realignTitles(_ ids: Set<UUID>) {
         for id in ids {
-            guard let clip = clip(id), clip.title != nil else { continue }
-            let alignment = TitleAlignment(position: clip.visual.x)
+            guard let clip = clip(id), let title = clip.title else { continue }
+            let alignment = title.anchor?.alignment ?? TitleAlignment(position: clip.visual.x)
             changeTitle(of: [id]) { $0.alignment = alignment }
         }
     }

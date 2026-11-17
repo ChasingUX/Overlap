@@ -22,7 +22,9 @@ struct PreviewView: NSViewRepresentable {
         view.playerLayer.player = store.playback.player
         view.aspectRatio = aspectRatio
         view.setStage(stage)
-        view.overlay.state = TransformOverlay.State(project: store.project, selection: store.selection, handlesClip: store.handlesClip,
+        // While a Text or Canvas slider is dragged, the handles follow what the preview shows.
+        view.overlay.state = TransformOverlay.State(project: store.handlesPreview ?? store.project, selection: store.selection,
+                                                    handlesClip: store.handlesClip,
                                                     time: store.playback.currentTime, isCropping: store.isCropping,
                                                     editingTitle: store.editingTitleClip,
                                                     aimedZoom: store.aimedClip != nil ? store.selectedZoom : nil)
@@ -50,8 +52,14 @@ final class PlayerLayerView: NSView {
     private var still: CVPixelBuffer?
     private var isSwapping = false
     private var readyObservation: NSKeyValueObservation?
+    private let store: ProjectStore
+    /// An asset from the Media tab is being dragged over the preview, so the canvas's edge lights up.
+    private(set) var isDropTargeted = false {
+        didSet { if isDropTargeted != oldValue { updateOutline() } }
+    }
 
     init(player: AVPlayer, store: ProjectStore) {
+        self.store = store
         overlay = TransformOverlay(store: store)
         super.init(frame: .zero)
         wantsLayer = true
@@ -69,7 +77,6 @@ final class PlayerLayerView: NSView {
         stageLayer.contentsGravity = .resizeAspect
         stageLayer.isHidden = true
         playerLayer.addSublayer(stageLayer)
-        outlineLayer.borderColor = Theme.canvasOutline.cgColor
         outlineLayer.cornerRadius = Self.cornerRadius
         outlineLayer.cornerCurve = .continuous
         layer?.insertSublayer(outlineLayer, above: playerLayer)
@@ -77,7 +84,10 @@ final class PlayerLayerView: NSView {
         readyObservation = playerLayer.observe(\.isReadyForDisplay) { [weak self] _, _ in
             Task { @MainActor in self?.removeStillWhenReady() }
         }
+        // Assets dragged from the Media tab.
+        registerForDraggedTypes([.string])
         updateSurround()
+        updateOutline()
     }
 
     @available(*, unavailable)
@@ -158,9 +168,8 @@ final class PlayerLayerView: NSView {
             stillLayer.frame = playerLayer.bounds
             stageLayer.frame = playerLayer.bounds
             outlineLayer.frame = playerLayer.frame
-            // One pixel on any screen.
-            outlineLayer.borderWidth = 1 / (window?.backingScaleFactor ?? 2)
         }
+        updateOutline()
         // The handles cover the whole preview, so clicks around the canvas reach them too.
         overlay.frame = bounds
         overlay.canvasRect = overlay.convert(playerLayer.frame, from: self)
@@ -169,6 +178,59 @@ final class PlayerLayerView: NSView {
     override func viewDidChangeBackingProperties() {
         super.viewDidChangeBackingProperties()
         needsLayout = true
+    }
+
+    /// The canvas's faint one-pixel edge, or, while an asset is dragged over, a clear accent one.
+    private func updateOutline() {
+        withoutAnimation {
+            outlineLayer.borderColor = (isDropTargeted ? NSColor.controlAccentColor : Theme.canvasOutline).cgColor
+            // One pixel on any screen.
+            outlineLayer.borderWidth = isDropTargeted ? 2 : 1 / (window?.backingScaleFactor ?? 2)
+        }
+    }
+
+    // MARK: Drop from the Media tab
+
+    /// The asset being dragged, when it's one of this project's. Anywhere on the preview counts, not only the canvas.
+    private func draggedAsset(_ info: NSDraggingInfo) -> UUID? {
+        guard let string = info.draggingPasteboard.string(forType: .string),
+              let id = TimelineDrag.assetID(from: string), store.project.asset(id) != nil else { return nil }
+        return id
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        draggingUpdated(sender)
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        isDropTargeted = draggedAsset(sender) != nil
+        return isDropTargeted ? .copy : []
+    }
+
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        isDropTargeted = false
+    }
+
+    /// Lands as a click on its row does: at the playhead, on a new track above the rest.
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        isDropTargeted = false
+        guard let id = draggedAsset(sender) else { return false }
+        store.addAssetAtPlayhead(id)
+        return true
+    }
+
+    #if DEBUG
+    /// Holds an asset over the preview, runs `whileHeld`, then drops it, as a drag from the Media tab does.
+    func debugDrop(_ id: UUID, whileHeld: () -> Void) {
+        isDropTargeted = true
+        whileHeld()
+        isDropTargeted = false
+        store.addAssetAtPlayhead(id)
+    }
+    #endif
+
+    override func draggingEnded(_ sender: NSDraggingInfo) {
+        isDropTargeted = false
     }
 
     #if DEBUG

@@ -83,27 +83,15 @@ enum TitleRenderer {
 
 extension TitleRenderer {
     /// A small picture of the canvas with the text where it sits, at its scale, rotation and opacity, over a dark
-    /// frame: what a text clip shows on the timeline, as frames do for video, and a style's tile in the Text tab, on
-    /// a soft gray that stands in for a picture with `asTile`, where the text is drawn larger than it would be so it
-    /// reads at that size, still where it sits. `height` is in pixels.
-    static func frame(for title: Title, visual: Visual, canvas: CGSize, height: Int, asTile: Bool = false) -> CGImage? {
+    /// frame: what a text clip shows on the timeline, as frames do for video. `height` is in pixels.
+    static func frame(for title: Title, visual: Visual, canvas: CGSize, height: Int) -> CGImage? {
         let scale = CGFloat(height) / canvas.height
         let size = CGSize(width: max(1, (canvas.width * scale).rounded()), height: CGFloat(height))
         guard let context = CGContext(data: nil, width: Int(size.width), height: height, bitsPerComponent: 8, bytesPerRow: 0,
                                       space: CGColorSpace(name: CGColorSpace.sRGB)!,
                                       bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
-        // The tile's gray runs top to bottom as a timeline clip's does, in the same neutral grays.
-        if asTile, let gradient = CGGradient(colorsSpace: CGColorSpace(name: CGColorSpace.sRGB),
-                                              colors: [CGColor(srgbRed: 0x33 / 255, green: 0x33 / 255, blue: 0x35 / 255, alpha: 1),
-                                                       CGColor(srgbRed: 0x23 / 255, green: 0x23 / 255, blue: 0x25 / 255, alpha: 1)] as CFArray,
-                                              locations: [0, 1]) {
-            context.drawLinearGradient(gradient, start: CGPoint(x: 0, y: size.height), end: .zero, options: [])
-        } else {
-            context.setFillColor(CGColor(srgbRed: 0.08, green: 0.08, blue: 0.09, alpha: 1))
-            context.fill(CGRect(origin: .zero, size: size))
-        }
-        var title = title
-        if asTile { title.size *= 1.7 }
+        context.setFillColor(CGColor(srgbRed: 0.08, green: 0.08, blue: 0.09, alpha: 1))
+        context.fill(CGRect(origin: .zero, size: size))
         guard let text = image(for: title, canvas: size) else { return context.makeImage() }
         let drawn = CGSize(width: CGFloat(text.width) * visual.scale, height: CGFloat(text.height) * visual.scale)
         // The canvas's y runs down; the bitmap's runs up.

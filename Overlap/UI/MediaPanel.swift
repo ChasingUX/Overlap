@@ -1,9 +1,20 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
+/// The Media tab: the project's assets, newest last, each with its picture or sound, name and length. Click one to
+/// add it at the playhead, or drag it onto the timeline or the canvas.
 struct MediaPanel: View {
     let store: ProjectStore
     @State private var isDropTargeted = false
+
+    /// For checks: OVERLAP_SNAPSHOT_HOVERASSET=1 draws the first asset as if the pointer were over it.
+    private static let hoversFirstRow: Bool = {
+        #if DEBUG
+        ProcessInfo.processInfo.environment["OVERLAP_SNAPSHOT_HOVERASSET"] != nil
+        #else
+        false
+        #endif
+    }()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -35,7 +46,7 @@ struct MediaPanel: View {
                             PendingRow(name: pending.name)
                         }
                         ForEach(listed) { asset in
-                            AssetRow(asset: asset, store: store)
+                            AssetRow(asset: asset, store: store, startsHovered: Self.hoversFirstRow && asset.id == listed.first?.id)
                         }
                     }
                 }
@@ -64,25 +75,11 @@ struct MediaPanel: View {
     }
 
     private var emptyState: some View {
-        VStack(spacing: 8) {
-            EmptyStateIcon(icon: .media)
-            Text("Import video and audio")
-                .font(PanelMetrics.emptyTitleFont)
-            BalancedText {
-                Text("Drag files here or onto the timeline, or choose Import.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-            }
-            Button("Import Media…") {
-                store.presentImportPanel()
-            }
-            .padding(.top, 6)
-        }
-        .padding(24)
-        // In the middle of the whole panel, as other tabs' empty states are, not just of the space under the top row.
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(.bottom, PanelMetrics.topRowHeight + PanelMetrics.topRowInset * 2)
+        PlaceholderPanel(icon: .media, title: "Import video and audio",
+                         message: "Drag files here or onto the timeline, or choose Import.",
+                         action: (title: "Import Media…", perform: { store.presentImportPanel() }))
+            // In the middle of the whole panel, as other tabs' empty states are, not just of the space under the top row.
+            .padding(.bottom, PanelMetrics.topRowHeight + PanelMetrics.topRowInset * 2)
     }
 }
 
@@ -109,41 +106,67 @@ private struct PendingRow: View {
     }
 }
 
+/// One asset: its picture or sound, its name and what it is. It lights up under the pointer, and clicking it adds
+/// it at the playhead. Dragging it carries its thumbnail to the timeline or the canvas.
 private struct AssetRow: View {
     let asset: Asset
     let store: ProjectStore
 
+    @State private var isHovered: Bool
+
+    init(asset: Asset, store: ProjectStore, startsHovered: Bool = false) {
+        self.asset = asset
+        self.store = store
+        _isHovered = State(initialValue: startsHovered)
+    }
+
     var body: some View {
         HStack(spacing: 10) {
-            preview
+            AssetThumbnail(asset: asset, store: store)
                 .frame(width: 48, height: 36)
                 .clipShape(RoundedRectangle(cornerRadius: 5))
             VStack(alignment: .leading, spacing: 2) {
-                Text(asset.displayName)
+                Text(asset.shownName)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                Text(details)
+                Text(asset.summary)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
             Spacer(minLength: 4)
         }
-        .padding(.horizontal, 14)
+        .padding(.horizontal, 8)
         .padding(.vertical, 8)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(isHovered ? 0.06 : 0)))
+        .padding(.horizontal, 6)
         .contentShape(Rectangle())
+        .onHover { isHovered = $0 }
+        .onTapGesture { store.addAssetAtPlayhead(asset.id) }
         .onDrag {
             NSItemProvider(object: TimelineDrag.payload(for: asset.id) as NSString)
+        } preview: {
+            AssetDragPreview(asset: asset, store: store)
         }
+        .help("Add at the playhead, or drag to the timeline or the canvas")
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction { store.addAssetAtPlayhead(asset.id) }
+        .accessibilityHint("Adds it at the playhead")
         .contextMenu {
             Button("Remove from Project", role: .destructive) {
                 store.requestRemoveAsset(asset)
             }
         }
     }
+}
 
-    @ViewBuilder
-    private var preview: some View {
+/// An asset's picture, or its sound's waveform, or an icon for what it is until either is made.
+private struct AssetThumbnail: View {
+    let asset: Asset
+    let store: ProjectStore
+
+    var body: some View {
         if let image = store.thumbnails[asset.id] {
             Image(decorative: image, scale: 1)
                 .resizable()
@@ -158,23 +181,62 @@ private struct AssetRow: View {
             }
         }
     }
+}
 
-    private var details: String {
-        var parts: [String] = []
-        switch asset.kind {
-        case .video:
-            if let width = asset.pixelWidth, let height = asset.pixelHeight { parts.append("\(width)×\(height)") }
-            if let rate = asset.frameRate { parts.append("\(rate.formatted(.number.precision(.fractionLength(0...2)))) fps") }
-        case .audio:
-            if let rate = asset.sampleRate { parts.append("\((rate / 1000).formatted(.number.precision(.fractionLength(0...1)))) kHz") }
-            if let channels = asset.channelCount { parts.append(channels == 1 ? "Mono" : channels == 2 ? "Stereo" : "\(channels) ch") }
-        case .image:
-            if let width = asset.pixelWidth, let height = asset.pixelHeight { parts.append("\(width)×\(height)") }
-            parts.append("Image")
-            return parts.joined(separator: " · ")
+/// What follows the pointer while an asset is dragged: its thumbnail, bigger, in the picture's own shape.
+struct AssetDragPreview: View {
+    let asset: Asset
+    let store: ProjectStore
+
+    static let width: CGFloat = 128
+
+    /// The picture's shape, kept between a wide strip and a square; a sound is a strip.
+    private var height: CGFloat {
+        guard asset.kind != .audio, let image = store.thumbnails[asset.id], image.width > 0 else { return 44 }
+        let ratio = CGFloat(image.height) / CGFloat(image.width)
+        return (Self.width * ratio).clamped(to: 44...Self.width)
+    }
+
+    var body: some View {
+        AssetThumbnail(asset: asset, store: store)
+            .frame(width: Self.width, height: height)
+            .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .strokeBorder(Color.white.opacity(0.18), lineWidth: 1)
+            }
+            .environment(\.colorScheme, .dark)
+    }
+
+    #if DEBUG
+    /// The thumbnail as it's dragged, at twice its size, for the debug self-check.
+    @MainActor static func debugImage(of asset: Asset, store: ProjectStore) -> CGImage? {
+        let renderer = ImageRenderer(content: AssetDragPreview(asset: asset, store: store))
+        renderer.scale = 2
+        return renderer.cgImage
+    }
+    #endif
+}
+
+extension Asset {
+    /// The name without its file's extension: "Theme" for Theme.m4a. A name whose last dot isn't a media file's
+    /// extension, such as a screen recording's time, stays whole.
+    var shownName: String {
+        let name = displayName as NSString
+        let ext = name.pathExtension
+        guard !ext.isEmpty, let type = UTType(filenameExtension: ext),
+              type.conforms(to: .audiovisualContent) || type.conforms(to: .image) else { return displayName }
+        let stem = name.deletingPathExtension
+        return stem.isEmpty ? displayName : stem
+    }
+
+    /// What it is and how long: "Video · 0:15", "Audio · 0:20", or "Image", which has no length of its own.
+    var summary: String {
+        switch kind {
+        case .video: "Video · \(duration.shortDuration)"
+        case .audio: "Audio · \(duration.shortDuration)"
+        case .image: "Image"
         }
-        parts.append(asset.duration.shortDuration)
-        return parts.joined(separator: " · ")
     }
 }
 
