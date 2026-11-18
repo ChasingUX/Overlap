@@ -343,6 +343,7 @@ final class ProjectStore {
         case let .color(color): .color(color)
         case let .gradient(gradient): .gradient(gradient)
         case let .mesh(mesh): .mesh(mesh)
+        case let .meshGradient(mesh): MeshGradientRenderer.resolved(mesh)
         case let .wallpaper(id): project.asset(id).map { .image(mediaURL(for: $0)) }
         }
     }
@@ -1345,6 +1346,16 @@ final class ProjectStore {
 
     func setBackground(_ fill: BackgroundFill?) {
         apply("Change Background") { $0.setBackground(fill) }
+    }
+
+    /// Changes the background's mesh gradient in place, as its editor in the Canvas tab does, keeping the frame.
+    func setGradient(_ mesh: MeshGradientFill, name: String) {
+        apply(name) { $0.background = .meshGradient(mesh) }
+    }
+
+    /// Shows a mesh gradient change while it's dragged.
+    func previewGradient(_ mesh: MeshGradientFill) {
+        previewLook { $0.background = .meshGradient(mesh) }
     }
 
     /// Changes how the pictures sit on the background.

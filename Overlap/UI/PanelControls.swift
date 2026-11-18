@@ -374,6 +374,8 @@ final class SwatchColorWell: NSColorWell {
     }
 
     override func activate(_ exclusive: Bool) {
+        // A gradient's dot picking a color lets go of the panel.
+        ColorPanelSession.active?.stop()
         kept = nil
         let panel = NSColorPanel.shared
         panel.showsAlpha = false
@@ -382,17 +384,8 @@ final class SwatchColorWell: NSColorWell {
         onActiveChange?(true)
     }
 
-    /// Opens the color panel beside the swatch, just past the edge of the panel it sits in and level with it, so
-    /// it shows up where you're looking rather than wherever it was last.
     private func place(_ panel: NSColorPanel) {
-        guard let window, let screen = window.screen ?? NSScreen.main else { return }
-        let swatch = window.convertToScreen(convert(bounds, to: nil))
-        let edge = enclosingScrollView.map { window.convertToScreen($0.convert($0.bounds, to: nil)).maxX } ?? swatch.maxX
-        let visible = screen.visibleFrame
-        let size = panel.frame.size
-        let left = min(edge + 12, visible.maxX - size.width)
-        let top = (swatch.maxY + 40).clamped(to: (visible.minY + size.height)...visible.maxY)
-        panel.setFrameTopLeftPoint(NSPoint(x: max(visible.minX, left), y: top))
+        ColorPanelSession.place(panel, beside: self)
     }
 
     override func deactivate() {
@@ -737,5 +730,104 @@ struct BoxSlider: View {
             let next = (value + (direction == .increment ? step : -step)).clamped(to: range)
             if next != value { onCommit(next) }
         }
+    }
+}
+
+
+/// The color panel picking for something that isn't a color well, such as a gradient's dot: each change shows as
+/// it's made, and the color is kept once you stop changing it for a moment, as the swatches do.
+@MainActor
+final class ColorPanelSession: NSObject {
+    private var onChange: ((RGBA) -> Void)?
+    private var onCommit: ((RGBA) -> Void)?
+    private var onEnd: (() -> Void)?
+    private var settle: Task<Void, Never>?
+    private var closing: NSObjectProtocol?
+    /// The session the panel picks for now, if any.
+    private(set) static weak var active: ColorPanelSession?
+
+    /// Opens the panel at `color` beside `view`, picking for this session until another well or session takes it,
+    /// or the panel closes.
+    func start(color: RGBA, beside view: NSView?, onChange: @escaping (RGBA) -> Void, onCommit: @escaping (RGBA) -> Void,
+               onEnd: @escaping () -> Void) {
+        stop()
+        self.onChange = onChange
+        self.onCommit = onCommit
+        self.onEnd = onEnd
+        let panel = NSColorPanel.shared
+        panel.showsAlpha = false
+        // A color well left picking would take the next change too.
+        NSColorPanel.shared.setTarget(nil)
+        NSColorPanel.shared.setAction(nil)
+        panel.color = NSColor(srgbRed: color.red, green: color.green, blue: color.blue, alpha: 1)
+        panel.setTarget(self)
+        panel.setAction(#selector(colorDidChange(_:)))
+        Self.active = self
+        if let view { Self.place(panel, beside: view) }
+        panel.orderFront(nil)
+        closing = NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: panel, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.stop() }
+        }
+    }
+
+    /// Stops picking, keeping a color still settling.
+    func stop() {
+        if let closing { NotificationCenter.default.removeObserver(closing) }
+        closing = nil
+        if Self.active === self {
+            NSColorPanel.shared.setTarget(nil)
+            NSColorPanel.shared.setAction(nil)
+            Self.active = nil
+        }
+        let end = onEnd
+        onChange = nil
+        onCommit = nil
+        onEnd = nil
+        end?()
+    }
+
+    @objc private func colorDidChange(_ sender: NSColorPanel) {
+        guard let srgb = sender.color.usingColorSpace(.sRGB) else { return }
+        let picked = RGBA(red: srgb.redComponent, green: srgb.greenComponent, blue: srgb.blueComponent)
+        onChange?(picked)
+        let commit = onCommit
+        settle?.cancel()
+        settle = Task {
+            try? await Task.sleep(for: .milliseconds(400))
+            guard !Task.isCancelled else { return }
+            commit?(picked)
+        }
+    }
+
+    /// Opens the color panel beside a control, just past the edge of the panel it sits in and level with it, so it
+    /// shows up where you're looking rather than wherever it was last.
+    static func place(_ panel: NSColorPanel, beside view: NSView) {
+        guard let window = view.window, let screen = window.screen ?? NSScreen.main else { return }
+        let control = window.convertToScreen(view.convert(view.bounds, to: nil))
+        let edge = view.enclosingScrollView.map { window.convertToScreen($0.convert($0.bounds, to: nil)).maxX } ?? control.maxX
+        let visible = screen.visibleFrame
+        let size = panel.frame.size
+        let left = min(edge + 12, visible.maxX - size.width)
+        let top = (control.maxY + 40).clamped(to: (visible.minY + size.height)...visible.maxY)
+        panel.setFrameTopLeftPoint(NSPoint(x: max(visible.minX, left), y: top))
+    }
+}
+
+/// An empty view that keeps hold of its AppKit view, so SwiftUI content can place a window beside itself.
+struct AnchorView: NSViewRepresentable {
+    let anchor: Anchor
+
+    final class Anchor {
+        weak var view: NSView?
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        anchor.view = view
+        return view
+    }
+
+    func updateNSView(_ view: NSView, context: Context) {
+        anchor.view = view
     }
 }

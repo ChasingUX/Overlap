@@ -310,6 +310,7 @@ enum CompositionBuilder {
         case let .color(color): .color(color)
         case let .gradient(gradient): .gradient(gradient)
         case let .mesh(mesh): .mesh(mesh)
+        case let .meshGradient(mesh): MeshGradientRenderer.resolved(mesh)
         case let .wallpaper(id): urls[id].map { .image($0) }
         }
     }

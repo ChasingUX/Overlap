@@ -72,7 +72,7 @@ enum MeshRenderer {
             image = blended(pool, over: image, spot.blend)
         }
         if mesh.grain {
-            image = grained(image, in: rect)
+            image = grained(image, in: rect, spread: 0.24)
         }
         return dithered(image, in: rect).cropped(to: rect)
     }
@@ -88,21 +88,22 @@ enum MeshRenderer {
     }
 
     /// Fine colored noise laid over in overlay, as the web tools' SVG noise is: gray on average, so it leaves the
-    /// colors as they were and only adds texture.
-    private static func grained(_ image: CIImage, in rect: CGRect) -> CIImage {
+    /// colors as they were and only adds texture. `spread` is how far the noise strays from gray; 0.24 is the web
+    /// tools' grain.
+    static func grained(_ image: CIImage, in rect: CGRect, spread: Double) -> CIImage {
         guard let noise = CIFilter(name: "CIRandomGenerator")?.outputImage else { return image }
         let grain = noise.applyingFilter("CIColorMatrix", parameters: [
-            "inputRVector": CIVector(x: 0.24, y: 0, z: 0, w: 0),
-            "inputGVector": CIVector(x: 0, y: 0.24, z: 0, w: 0),
-            "inputBVector": CIVector(x: 0, y: 0, z: 0.24, w: 0),
+            "inputRVector": CIVector(x: spread, y: 0, z: 0, w: 0),
+            "inputGVector": CIVector(x: 0, y: spread, z: 0, w: 0),
+            "inputBVector": CIVector(x: 0, y: 0, z: spread, w: 0),
             "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 0),
-            "inputBiasVector": CIVector(x: 0.38, y: 0.38, z: 0.38, w: 0.5),
+            "inputBiasVector": CIVector(x: 0.5 - spread / 2, y: 0.5 - spread / 2, z: 0.5 - spread / 2, w: 0.5),
         ]).cropped(to: rect)
         return grain.applyingFilter("CIOverlayBlendMode", parameters: [kCIInputBackgroundImageKey: image])
     }
 
     /// Noise a step of 255 either way, so smooth stretches don't band once they're 8 bits a channel.
-    private static func dithered(_ image: CIImage, in rect: CGRect) -> CIImage {
+    static func dithered(_ image: CIImage, in rect: CGRect) -> CIImage {
         guard let noise = CIFilter(name: "CIRandomGenerator")?.outputImage else { return image }
         let step = 1.0 / 255
         let dither = noise.applyingFilter("CIColorMatrix", parameters: [

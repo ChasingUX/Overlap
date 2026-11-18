@@ -311,6 +311,8 @@ final class FrameRenderer: @unchecked Sendable {
         case let .mesh(mesh):
             guard let drawn = MeshRenderer.image(mesh, size: canvas.size) else { return CIImage(color: .black).cropped(to: canvas) }
             return CIImage(cgImage: drawn).transformed(by: CGAffineTransform(translationX: canvas.minX, y: canvas.minY))
+        case let .meshGradient(mesh):
+            return MeshGradientRenderer.ciImage(mesh, in: canvas)
         case let .image(url):
             // A wallpaper fills the canvas, cropped at the edges as needed.
             guard let image = image(at: url, fitting: canvas.size) else { return CIImage(color: .black).cropped(to: canvas) }

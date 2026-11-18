@@ -6,6 +6,7 @@ enum ResolvedFill: Hashable, Sendable {
     case color(RGBA)
     case gradient(GradientFill)
     case mesh(MeshFill)
+    case meshGradient(MeshGradientFill)
     case image(URL)
 }
 

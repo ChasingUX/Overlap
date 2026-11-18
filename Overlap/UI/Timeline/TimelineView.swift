@@ -1028,6 +1028,9 @@ final class TimelineView: NSView {
             guard let image = MeshRenderer.image(mesh, size: CGSize(width: 192, height: 108)),
                   let context = NSGraphicsContext.current?.cgContext else { return }
             drawFilling(image, in: rect, context: context)
+        case let .meshGradient(mesh):
+            guard let image = MeshGradientRenderer.prepare(mesh), let context = NSGraphicsContext.current?.cgContext else { return }
+            drawFilling(image, in: rect, context: context)
         case let .wallpaper(id):
             guard let image = snapshot.thumbnails[id], let context = NSGraphicsContext.current?.cgContext else { return }
             drawFilling(image, in: rect, context: context)

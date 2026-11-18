@@ -9,9 +9,17 @@ struct CanvasPanel: View {
     var body: some View {
         ClipPanel(title: "Canvas") {
             PanelGroup(title: "Background") {
+                let canvas = store.project.canvas ?? Project.defaultCanvas
                 BackgroundPicker(store: store, selected: store.project.background,
                                  onPreview: { fill in store.previewLook { $0.setBackground(fill) } },
-                                 onSelect: { store.setBackground($0) })
+                                 onSelect: { store.setBackground($0) },
+                                 gradientEditing: (aspectRatio: CGFloat(canvas.width) / CGFloat(max(canvas.height, 1)),
+                                                   onPreview: { store.previewGradient($0) },
+                                                   onCommit: { mesh, name in
+                                                       store.setGradient(mesh, name: name)
+                                                       // A gradient made with + keeps its new shape in its swatch.
+                                                       GradientLibrary.shared.update(mesh)
+                                                   }))
             }
 
             // How the pictures sit on it, once there's a background to show around them.
@@ -38,9 +46,10 @@ struct CanvasPanel: View {
     }
 }
 
-/// Background choices, top to bottom: None, which leaves the pictures filling the canvas; gradients and wallpapers
-/// as square tiles, a row or two of each with Show More for the rest; then plain colors, the built-in ones, a
-/// spectrum that opens the color panel, with its eyedropper, for one of your own.
+/// Background choices, top to bottom: None, which leaves the pictures filling the canvas; gradients as square tiles,
+/// the built-in ones, any made with the + after them, and the +, with the chosen one large to shape by its points;
+/// wallpapers as tiles, a row or two with Show More for the rest; then plain colors, the built-in ones, a spectrum
+/// that opens the color panel, with its eyedropper, for one of your own.
 /// Wallpapers are your own images and the Mac's aerials this Mac has downloaded. Any of them drags onto the timeline
 /// as a background clip.
 struct BackgroundPicker: View {
@@ -50,17 +59,17 @@ struct BackgroundPicker: View {
     /// Shows a color while it's being picked in the color panel.
     let onPreview: (BackgroundFill) -> Void
     let onSelect: (BackgroundFill?) -> Void
+    /// Where a chosen mesh gradient can be shaped, under the gradients: the canvas's shape, and what a change does.
+    var gradientEditing: (aspectRatio: CGFloat, onPreview: (MeshGradientFill) -> Void, onCommit: (MeshGradientFill, String) -> Void)?
 
     @State private var thumbnails: [URL: CGImage] = [:]
     @State private var aerials: [SystemWallpapers.Aerial] = []
     @State private var isPickingColor = false
-    @State private var showsAllGradients = false
     @State private var showsAllWallpapers = false
 
     private static let tileColumns = Array(repeating: GridItem(.flexible(), spacing: SwatchMetrics.tileGap), count: 5)
     private static let colorColumns = Array(repeating: GridItem(.flexible(), spacing: 0), count: 9)
-    /// Two rows of gradients, and of wallpapers with the tile that adds one.
-    private static let shownGradients = 10
+    /// Two rows of wallpapers, with the tile that adds one.
     private static let shownWallpapers = 9
 
     /// The project's own images, then wallpapers you've added and the Mac's aerials, each once. One the project has
@@ -82,13 +91,32 @@ struct BackgroundPicker: View {
                     .padding(.bottom, 8)
             }
 
-            let gradients = BackgroundFill.gradients
-            heading("Gradients", showsAll: gradients.count > Self.shownGradients ? $showsAllGradients : nil)
+            // The built-in gradients, then every one you've made, then the + that makes another, so each one made
+            // shows as a new tile.
+            let gradients = BackgroundFill.gradients + GradientLibrary.shared.gradients.map { BackgroundFill.meshGradient($0) }
+            caption("Gradients")
             LazyVGrid(columns: Self.tileColumns, spacing: SwatchMetrics.tileGap) {
-                ForEach(showsAllGradients ? gradients : Array(gradients.prefix(Self.shownGradients)), id: \.self) { fill in
-                    tile(name: "Gradient", isSelected: selected == fill, action: { choose(fill) }) { FillFace(fill: fill) }
+                ForEach(gradients, id: \.self) { fill in
+                    tile(name: "Gradient", isSelected: isChosen(fill), action: { choose(fill) }) { FillFace(fill: fill) }
                         .onDrag { NSItemProvider(object: TimelineDrag.payload(for: fill) as NSString) }
+                        .contextMenu {
+                            if case let .meshGradient(mesh) = fill, let id = mesh.id {
+                                Button("Delete Gradient", role: .destructive) { GradientLibrary.shared.remove(id) }
+                            }
+                        }
                 }
+                AddTile(title: "New gradient") {
+                    let new = MeshGradientFill.surprise()
+                    GradientLibrary.shared.add(new)
+                    choose(.meshGradient(new))
+                }
+                .aspectRatio(1, contentMode: .fit)
+            }
+            // The chosen gradient, large, to shape by its points, right under the one picked.
+            if let gradientEditing, case let .meshGradient(mesh)? = selected {
+                MeshGradientEditor(mesh: mesh, aspectRatio: gradientEditing.aspectRatio,
+                                   onPreview: gradientEditing.onPreview, onCommit: gradientEditing.onCommit)
+                    .padding(.top, 6)
             }
 
             let wallpapers = wallpapers
@@ -98,7 +126,7 @@ struct BackgroundPicker: View {
                 ForEach(showsAllWallpapers ? wallpapers : Array(wallpapers.prefix(Self.shownWallpapers))) { choice in
                     wallpaperTile(choice)
                 }
-                AddWallpaperTile { store.presentWallpaperPanel { choose($0) } }
+                AddTile(title: "Add wallpapers") { store.presentWallpaperPanel { choose($0) } }
                     .aspectRatio(1, contentMode: .fit)
             }
             if aerials.count < 5 {
@@ -202,6 +230,10 @@ struct BackgroundPicker: View {
     private func isChosen(_ fill: BackgroundFill) -> Bool {
         if case let .color(chosen)? = selected, case let .color(color) = fill {
             return chosen.isNear(color)
+        }
+        // A gradient you've made stays chosen as it's shaped.
+        if case let .meshGradient(chosen)? = selected, case let .meshGradient(mesh) = fill, let id = mesh.id {
+            return chosen.id == id
         }
         return selected == fill
     }
@@ -354,6 +386,8 @@ struct FillFace: View {
                 if let image = MeshRenderer.image(mesh, size: CGSize(width: 192, height: 192)) {
                     Image(decorative: image, scale: 1).resizable()
                 }
+            case let .meshGradient(mesh)?:
+                Rectangle().fill(MeshGradientRenderer.view(mesh))
             case .wallpaper?, nil:
                 Color.clear
             }
@@ -361,8 +395,9 @@ struct FillFace: View {
     }
 }
 
-/// The last wallpaper tile: a dashed outline with a +, which adds wallpapers to the library.
-private struct AddWallpaperTile: View {
+/// The last tile of gradients or wallpapers: a dashed outline with a +, which makes a gradient or adds wallpapers.
+private struct AddTile: View {
+    let title: String
     let action: () -> Void
     @State private var isHovered = false
 
@@ -379,8 +414,8 @@ private struct AddWallpaperTile: View {
         }
         .buttonStyle(.plain)
         .onHover { isHovered = $0 }
-        .help("Add wallpapers")
-        .accessibilityLabel("Add wallpapers")
+        .help(title)
+        .accessibilityLabel(title)
     }
 }
 

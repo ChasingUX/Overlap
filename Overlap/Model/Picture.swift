@@ -62,7 +62,10 @@ enum BackgroundFill: Hashable, Sendable, Codable {
     case color(RGBA)
     /// A two-color linear gradient, as projects made before mesh gradients have.
     case gradient(GradientFill)
+    /// A gradient of the kind made before mesh gradients were drawn with SwiftUI, as older projects have.
     case mesh(MeshFill)
+    /// A mesh gradient: a grid of colored points blending smoothly.
+    case meshGradient(MeshGradientFill)
     /// An image asset in the project.
     case wallpaper(UUID)
 
@@ -72,7 +75,7 @@ enum BackgroundFill: Hashable, Sendable, Codable {
         0x3A3A3C, 0xEFEFEF, 0xF4CBC3, 0xF8D08F, 0xF7E3A9, 0xBCE9C9, 0xBEDDF7, 0xDAC5F7,
     ].map { .color(RGBA(hex: $0)) }
     /// Built-in gradients: two rows of them, with Show More for any past that.
-    static let gradients: [BackgroundFill] = MeshFill.presets.map { .mesh($0) }
+    static let gradients: [BackgroundFill] = MeshGradientFill.presets.map { .meshGradient($0) }
 }
 
 /// How pictures sit on a background: scaled in from the canvas edges by the padding, with rounded corners and a
