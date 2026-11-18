@@ -66,6 +66,7 @@ enum MainMenu {
         menu.addItem(.separator())
         menu.addItem(item("Import…", #selector(ProjectDocument.importMedia(_:)), "i"))
         menu.addItem(item("Export…", #selector(ProjectDocument.exportProject(_:)), "e"))
+        menu.addItem(item("Export Captions…", #selector(ProjectDocument.exportCaptions(_:)), "e", [.command, .shift]))
         return menu
     }
 

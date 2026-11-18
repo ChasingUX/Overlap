@@ -145,6 +145,21 @@ extension TimelineTranscript {
     }
 }
 
+extension TimelineTranscript {
+    /// The captions as a SubRip file, the subtitles YouTube, Vimeo and players read: each numbered, with when it
+    /// shows and its line or two.
+    func srt(lines: Int) -> String {
+        func stamp(_ time: Time) -> String {
+            let milliseconds = Int((max(0, time.seconds) * 1000).rounded())
+            return String(format: "%02d:%02d:%02d,%03d", milliseconds / 3_600_000, milliseconds / 60_000 % 60,
+                          milliseconds / 1000 % 60, milliseconds % 1000)
+        }
+        return captionPhrases(lines: lines).enumerated().map { number, phrase in
+            "\(number + 1)\n\(stamp(phrase.range.start)) --> \(stamp(phrase.range.end))\n\(phrase.text)\n"
+        }.joined(separator: "\n")
+    }
+}
+
 extension Project {
     var hasCaptions: Bool {
         tracks.contains { $0.captions != nil }

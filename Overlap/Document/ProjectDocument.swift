@@ -123,6 +123,10 @@ final class ProjectDocument: NSDocument {
         store.presentImportPanel()
     }
 
+    @objc func exportCaptions(_ sender: Any?) {
+        store.exportCaptions()
+    }
+
     @objc func exportProject(_ sender: Any?) {
         store.requestExport()
     }
@@ -286,6 +290,8 @@ final class ProjectDocument: NSDocument {
             return store.canPaste
         case #selector(exportProject(_:)):
             return store.canExport
+        case #selector(exportCaptions(_:)):
+            return !store.timelineTranscript.isEmpty
         case #selector(detachAudio(_:)):
             return store.canDetachAudio
         case #selector(toggleFadeIn(_:)):

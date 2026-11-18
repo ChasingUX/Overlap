@@ -986,7 +986,8 @@ final class TimelineView: NSView {
             stroke.lineWidth = 1
         }
         stroke.stroke()
-        var name = label ?? asset?.displayName
+        // Without the file's extension, as the Media tab names it.
+        var name = label ?? asset?.shownName
             ?? clip.title.map { $0.text.split(separator: "\n").first.map(String.init) ?? "Text" }
             ?? (clip.fill != nil ? "Background" : "Missing media")
         if clip.speed != 1 {

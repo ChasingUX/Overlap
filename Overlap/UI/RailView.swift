@@ -17,7 +17,14 @@ struct RailView: View {
                 button(for: tab)
                     .transition(.opacity.combined(with: .scale(scale: 0.8)))
             }
-            // Transitions and Zoom join the bottom only while a crossfade or zoom is selected, so nothing above moves.
+            // Transitions and Zoom join the bottom only while a crossfade or zoom is selected, so nothing above moves,
+            // under a short line that sets them apart from the tabs that are always there.
+            if store.selectedTransition != nil || store.selectedZoom != nil {
+                Rectangle()
+                    .fill(Color.primary.opacity(0.12))
+                    .frame(width: 20, height: 1)
+                    .transition(.opacity)
+            }
             if store.selectedTransition != nil {
                 button(for: .transitions)
                     .transition(.opacity.combined(with: .scale(scale: 0.8)))

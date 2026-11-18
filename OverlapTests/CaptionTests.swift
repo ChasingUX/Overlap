@@ -70,6 +70,16 @@ struct CaptionTests {
         #expect(two.contains { $0.text == "First, open Settings\nfrom the sidebar," })
     }
 
+    @Test func captionsExportAsSubRip() {
+        let srt = project().timelineTranscript([video.id: speech]).srt(lines: 1)
+        let blocks = srt.components(separatedBy: "\n\n")
+        #expect(blocks.count == 6)
+        #expect(blocks[0] == "1\n00:00:00,000 --> 00:00:01,750\nHi, I'm going to walk you")
+        #expect(blocks[5].hasPrefix("6\n00:00:12,000 --> 00:00:13,800\nPick who can see it."))
+        // Two lines stay two lines.
+        #expect(project().timelineTranscript([video.id: speech]).srt(lines: 2).contains("you\nthrough the new dashboard."))
+    }
+
     @Test func aCaptionsTrackIsFilledAsTheProjectShows() throws {
         let stored = project()
         let transcript = stored.timelineTranscript([video.id: speech])

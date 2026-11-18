@@ -165,15 +165,21 @@ private struct WindowTitle: View {
                     }
                     .task { isFocused = true }
             } else {
-                HStack(spacing: 8) {
-                    Text(store.windowTitle)
-                        .foregroundStyle(.primary)
-                    if store.isSaving {
-                        Text("Saving…")
-                            .foregroundStyle(.secondary)
+                // "Saving…" hangs off the name's end, so the name stays centered as it comes and goes.
+                Text(store.windowTitle)
+                    .foregroundStyle(.primary)
+                    .fixedSize()
+                    .overlay(alignment: .trailing) {
+                        if store.isSaving {
+                            // A frame of no width at the name's end, which the words run out of to the right.
+                            Text("Saving…")
+                                .foregroundStyle(.secondary)
+                                .fixedSize()
+                                .padding(.leading, 16)
+                                .frame(width: 0, alignment: .leading)
+                                .allowsHitTesting(false)
+                        }
                     }
-                }
-                .fixedSize()
             }
         }
         .font(.system(size: 13, weight: .medium))

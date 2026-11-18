@@ -85,8 +85,8 @@ final class PlayerLayerView: NSView {
         readyObservation = playerLayer.observe(\.isReadyForDisplay) { [weak self] _, _ in
             Task { @MainActor in self?.removeStillWhenReady() }
         }
-        // Assets dragged from the Media tab.
-        registerForDraggedTypes([.string])
+        // Assets dragged from the Media tab, and media files from Finder.
+        registerForDraggedTypes([.string, .fileURL])
         updateSurround()
         updateOutline()
     }
@@ -190,7 +190,7 @@ final class PlayerLayerView: NSView {
         }
     }
 
-    // MARK: Drop from the Media tab
+    // MARK: Drop from the Media tab or Finder
 
     /// The asset being dragged, when it's one of this project's. Anywhere on the preview counts, not only the canvas.
     private func draggedAsset(_ info: NSDraggingInfo) -> UUID? {
@@ -199,12 +199,18 @@ final class PlayerLayerView: NSView {
         return id
     }
 
+    /// Media files dragged from Finder.
+    private func draggedFiles(_ info: NSDraggingInfo) -> [URL] {
+        (info.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? [])
+            .filter(MediaImporter.isSupported)
+    }
+
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
         draggingUpdated(sender)
     }
 
     override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
-        isDropTargeted = draggedAsset(sender) != nil
+        isDropTargeted = draggedAsset(sender) != nil || !draggedFiles(sender).isEmpty
         return isDropTargeted ? .copy : []
     }
 
@@ -212,11 +218,17 @@ final class PlayerLayerView: NSView {
         isDropTargeted = false
     }
 
-    /// Lands as a click on its row does: at the playhead, on a new track above the rest.
+    /// Lands as a click on its row does: at the playhead, on a new track above the rest. Files from Finder are
+    /// imported and placed the same way, one after another.
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         isDropTargeted = false
-        guard let id = draggedAsset(sender) else { return false }
-        store.addAssetAtPlayhead(id)
+        if let id = draggedAsset(sender) {
+            store.addAssetAtPlayhead(id)
+            return true
+        }
+        let files = draggedFiles(sender)
+        guard !files.isEmpty else { return false }
+        store.importFiles(files, placement: (start: store.playback.currentTime, target: .new(at: store.project.tracks.count)))
         return true
     }
 

@@ -1733,6 +1733,22 @@ final class ProjectStore {
         leaveSelectionTab()
     }
 
+    /// Saves what's said as a subtitle file, laid out as the captions are, to upload beside the video.
+    func exportCaptions() {
+        guard !timelineTranscript.isEmpty else { return }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [UTType(filenameExtension: "srt") ?? .plainText]
+        panel.nameFieldStringValue = "\(windowTitle).srt"
+        let lines = project.tracks.first(where: { $0.captions != nil })?.captions?.lines ?? 1
+        let text = timelineTranscript.srt(lines: lines)
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try text.write(to: url, atomically: true, encoding: .utf8)
+        } catch {
+            alert = AlertMessage(title: "The captions couldn't be saved", message: error.localizedDescription)
+        }
+    }
+
     /// Changes the selected captions' look or layout, as one undo step.
     func changeCaptions(_ name: String, _ change: @escaping (inout Captions) -> Void) {
         guard let track = selectedCaptions else { return }

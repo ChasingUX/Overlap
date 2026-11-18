@@ -17,8 +17,8 @@ struct ExportSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text("Export")
-                .font(.system(size: 15, weight: .semibold))
+            // A small gray label, as the panels have, rather than a title.
+            PanelLabel("Export")
             if let progress = store.exportProgress {
                 progressView(progress)
             } else {
