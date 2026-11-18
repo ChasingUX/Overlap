@@ -3,9 +3,10 @@ import AVFoundation
 import Observation
 
 enum PanelTab: Int, CaseIterable, Identifiable {
-    /// In the rail's order, which is also the View menu's: ⌘1 is Canvas. Transitions only shows while a crossfade
-    /// is selected and Zoom while a zoom is, at the bottom, so nothing moves when they come and go.
-    case canvas = 1, video, audio, text, media, transitions, zoom
+    /// In the rail's order, which is also the View menu's: ⌘1 is Canvas. Transcript shows once a video is on the
+    /// timeline. Transitions only shows while a crossfade is selected and Zoom while a zoom is, at the bottom, so
+    /// nothing moves when they come and go.
+    case canvas = 1, video, audio, text, transcript, media, transitions, zoom
 
     var id: Int { rawValue }
 
@@ -16,6 +17,7 @@ enum PanelTab: Int, CaseIterable, Identifiable {
         case .video: "Video"
         case .audio: "Audio"
         case .text: "Text"
+        case .transcript: "Transcript"
         case .transitions: "Transitions"
         case .zoom: "Zoom"
         }
@@ -28,6 +30,7 @@ enum PanelTab: Int, CaseIterable, Identifiable {
         case .video: .video
         case .audio: .audio
         case .text: .text
+        case .transcript: .transcript
         case .transitions: .transitions
         case .zoom: .zoom
         }
@@ -37,7 +40,7 @@ enum PanelTab: Int, CaseIterable, Identifiable {
     var isContextual: Bool { self == .transitions || self == .zoom }
 
     /// Project tabs always have content; clip tabs edit the selection.
-    var isProjectTab: Bool { self == .media || self == .canvas }
+    var isProjectTab: Bool { self == .media || self == .canvas || self == .transcript }
 }
 
 /// A short note at the bottom of the window, as when an export finishes or fails.
@@ -154,7 +157,7 @@ final class ProjectStore {
         playback.onPlayingChange = { [weak self] _ in self?.showAimedClip() }
     }
 
-    func load(_ project: Project, mediaDirectory: URL) {
+    func load(_ project: Project, mediaDirectory: URL, transcripts: [UUID: Transcript] = [:]) {
         var project = project
         project.normalizeTracks()
         // A version put back still knows which files turned out to be silent.
@@ -166,6 +169,12 @@ final class ProjectStore {
         avAssets = [:]
         installedLayout = nil
         selection = []
+        transcribeTask?.cancel()
+        transcribeTask = nil
+        transcribing = nil
+        self.transcripts = transcripts
+        transcriptSelection = []
+        refreshTranscript()
         project.assets.forEach(analyze)
         analyzeIsolatedVoices()
         updateStage()
@@ -244,6 +253,9 @@ final class ProjectStore {
         if selectedZoom != nil, selectedZoomTarget == nil {
             selectZoom(nil)
         }
+        // The Transcript tab goes with the last video on the timeline.
+        if activeTab == .transcript, !project.hasVideoClips { activeTab = .media }
+        refreshTranscript()
         playback.setMasterVolume(project.masterVolume)
         rebuildPlayback()
         analyzeIsolatedVoices()
@@ -1475,6 +1487,126 @@ final class ProjectStore {
                 isolating.remove(id)
             }
         }
+    }
+
+    // MARK: Transcript
+
+    /// What's said in each video, by asset. Kept with the project, but outside undo: transcribing isn't an edit.
+    private(set) var transcripts: [UUID: Transcript] = [:]
+    /// The transcript as the timeline plays it, kept up to date with every edit and as transcribing finds words.
+    private(set) var timelineTranscript = TimelineTranscript()
+    /// The video being transcribed: how far in, out of how long, and whether its language's model is still coming.
+    private(set) var transcribing: (asset: UUID, seconds: Double, duration: Double, isPreparing: Bool)?
+    /// The words found so far in the video being transcribed.
+    @ObservationIgnored private var transcribedSoFar: [Transcript.Word] = []
+    @ObservationIgnored private var transcribeTask: Task<Void, Never>?
+    /// Set by the document, which saves transcripts with the project.
+    @ObservationIgnored var transcriptsChanged: (() -> Void)?
+    /// The stretches the words selected in the Transcript tab cover, lit on the timeline and taken out by Delete.
+    private(set) var transcriptSelection: [TranscriptCut] = []
+
+    /// Transcripts of the media the project still has, to save.
+    var transcriptsToSave: [UUID: Transcript] {
+        transcripts.filter { project.asset($0.key) != nil }
+    }
+
+    /// Videos on the timeline with sound that haven't been transcribed yet.
+    var untranscribedVideos: [Asset] {
+        var seen: Set<UUID> = []
+        return project.spokenClips.compactMap { clip in
+            guard transcripts[clip.assetID] == nil, seen.insert(clip.assetID).inserted,
+                  let asset = project.asset(clip.assetID), asset.hasAudio else { return nil }
+            return asset
+        }
+    }
+
+    private func refreshTranscript() {
+        var known = transcripts
+        if let transcribing { known[transcribing.asset] = Transcript(words: transcribedSoFar) }
+        let updated = project.timelineTranscript(known)
+        if updated != timelineTranscript {
+            timelineTranscript = updated
+            transcriptSelection = []
+        }
+    }
+
+    /// Writes out what's said in every video on the timeline that hasn't been, one at a time, on this Mac.
+    func transcribe() {
+        guard transcribeTask == nil else { return }
+        let videos = untranscribedVideos
+        guard !videos.isEmpty else { return }
+        transcribeTask = Task { [weak self] in
+            for asset in videos {
+                guard let self, !Task.isCancelled else { return }
+                transcribedSoFar = []
+                transcribing = (asset.id, 0, asset.duration.seconds, false)
+                do {
+                    let words = try await Transcriber.transcribe(mediaURL(for: asset)) { [weak self] progress in
+                        await MainActor.run {
+                            guard let self, self.transcribing?.asset == asset.id else { return }
+                            self.transcribedSoFar = progress.words
+                            self.transcribing = (asset.id, progress.seconds, asset.duration.seconds, progress.isPreparing)
+                            self.refreshTranscript()
+                        }
+                    }
+                    guard !Task.isCancelled else { return }
+                    transcripts[asset.id] = Transcript(words: words)
+                    isSaving = true
+                    transcriptsChanged?()
+                } catch {
+                    if !Task.isCancelled, !(error is CancellationError) {
+                        alert = AlertMessage(title: "Couldn't transcribe \(asset.shownName)", message: error.localizedDescription)
+                    }
+                    break
+                }
+            }
+            guard let self else { return }
+            transcribing = nil
+            transcribedSoFar = []
+            transcribeTask = nil
+            refreshTranscript()
+        }
+    }
+
+    /// Takes out every marked pause, down to a short breath, and every filler word.
+    func removePausesAndFillers() {
+        let cuts = timelineTranscript.removable
+        guard !cuts.isEmpty, transcribing == nil else { return }
+        let transcript = timelineTranscript
+        let name = transcript.pauseCount > 0 && transcript.fillerCount > 0 ? "Remove Pauses and Fillers"
+            : transcript.pauseCount > 0 ? "Remove Pauses" : "Remove Fillers"
+        apply(name) { $0.cut(cuts) }
+    }
+
+    /// The transcript items selected in the Transcript tab, by their place in `timelineTranscript.items`.
+    func selectTranscript(_ items: IndexSet) {
+        transcriptSelection = timelineTranscript.cuts(covering: items)
+    }
+
+    /// Takes the selected words out of the video, closing up.
+    func cutTranscriptSelection() {
+        let cuts = transcriptSelection
+        guard !cuts.isEmpty, transcribing == nil else { return }
+        transcriptSelection = []
+        apply("Cut Words") { $0.cut(cuts) }
+    }
+
+    /// While the Transcript tab shows: what Remove would take out and the selected words' stretches, per clip, in
+    /// its source's seconds, for the timeline to mark.
+    var transcriptMarks: TranscriptMarks? {
+        guard isPanelVisible, activeTab == .transcript, !timelineTranscript.isEmpty else { return nil }
+        func bySource(_ cuts: [TranscriptCut]) -> [UUID: [ClosedRange<Double>]] {
+            var marks: [UUID: [ClosedRange<Double>]] = [:]
+            for cut in cuts {
+                guard let clip = project.clip(cut.clip) else { continue }
+                let from = clip.sourceStart.seconds + (cut.range.start - clip.start).seconds * clip.speed
+                let to = clip.sourceStart.seconds + (cut.range.end - clip.start).seconds * clip.speed
+                marks[clip.id, default: []].append(from...max(from, to))
+            }
+            return marks
+        }
+        return TranscriptMarks(removable: transcribing == nil ? bySource(timelineTranscript.removable) : [:],
+                               selected: bySource(transcriptSelection))
     }
 
     // MARK: Zoom

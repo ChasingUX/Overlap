@@ -1181,6 +1181,76 @@ enum DebugSnapshot {
                 }
             }
 
+            // OVERLAP_SNAPSHOT_TRANSCRIPT=<video>[,empty|,select|,cut|,remove] empties the timeline, adds the video at 0 s and
+            // transcribes it in the Transcript tab, reporting what it heard. ",select" then selects "first, open Settings
+            // from the sidebar," in the panel; ",cut" also cuts it; ",remove" takes out the pauses and fillers instead.
+            var transcriptReport: [String: Any] = [:]
+            if let value = environment["OVERLAP_SNAPSHOT_TRANSCRIPT"], let store = document?.store {
+                let parts = value.split(separator: ",").map(String.init)
+                let mode = parts.count > 1 ? parts[1] : ""
+                let all = Set(store.project.tracks.flatMap(\.clips).map(\.id))
+                store.apply("Debug") { $0.removeClips(all) }
+                var added: Asset?
+                store.importFiles([URL(filePath: parts[0])], placement: (.zero, .new(at: store.project.tracks.count))) { added = $0 }
+                for _ in 0..<100 where added == nil { try? await Task.sleep(for: .milliseconds(100)) }
+                store.showTab(.transcript)
+                try? await Task.sleep(for: .milliseconds(300))
+                let started = Date()
+                // ",empty" leaves it untranscribed, to see the tab before.
+                if mode != "empty" { store.transcribe() }
+                for _ in 0..<1200 where mode != "empty" && (store.transcribing != nil || store.timelineTranscript.isEmpty) {
+                    try? await Task.sleep(for: .milliseconds(100))
+                    if Date().timeIntervalSince(started) > 120 { break }
+                }
+                func describe(_ transcript: TimelineTranscript) -> [String: Any] {
+                    [
+                        "text": transcript.items.map { item -> String in
+                            switch item {
+                            case let .word(text, _, isFiller, _): isFiller ? "[\(text)]" : text
+                            case let .pause(range, _): "(\(String(format: "%.1f", range.duration.seconds)) s)"
+                            }
+                        }.joined(separator: " "),
+                        "paragraphs": transcript.paragraphs.map { $0.start.seconds },
+                        "pauses": transcript.pauseCount,
+                        "fillers": transcript.fillerCount,
+                        "removable": transcript.removable.map { [$0.range.start.seconds, $0.range.end.seconds] },
+                    ]
+                }
+                transcriptReport["took"] = Date().timeIntervalSince(started)
+                transcriptReport["heard"] = describe(store.timelineTranscript)
+                transcriptReport["tabShown"] = store.project.hasVideoClips
+                let window = NSApplication.shared.windows.first(where: \.isVisible)
+                func textViews(in view: NSView) -> [NSTextView] {
+                    (view as? NSTextView).map { [$0] } ?? view.subviews.flatMap(textViews)
+                }
+                let textView = window?.contentView.flatMap(textViews)?.first { String(describing: type(of: $0)).contains("Transcript") }
+                if mode == "select" || mode == "cut", let textView {
+                    let phrase = "first, open Settings from the sidebar,"
+                    let range = (textView.string as NSString).range(of: phrase, options: .caseInsensitive)
+                    textView.window?.makeFirstResponder(textView)
+                    textView.setSelectedRange(range)
+                    try? await Task.sleep(for: .milliseconds(300))
+                    transcriptReport["selected"] = store.transcriptSelection.map { [$0.range.start.seconds, $0.range.end.seconds] }
+                    if mode == "cut" {
+                        textView.deleteBackward(nil)
+                        try? await Task.sleep(for: .milliseconds(500))
+                    }
+                }
+                if mode == "remove" {
+                    store.removePausesAndFillers()
+                    try? await Task.sleep(for: .milliseconds(500))
+                }
+                if mode == "cut" || mode == "remove" {
+                    transcriptReport["after"] = describe(store.timelineTranscript)
+                    transcriptReport["clips"] = store.project.tracks.flatMap(\.clips).sorted { $0.start < $1.start }
+                        .map { [$0.start.seconds, $0.duration.seconds, $0.sourceStart.seconds] }
+                    transcriptReport["undoName"] = document?.undoManager?.undoActionName ?? ""
+                }
+                // On "first" for the highlight, unless a cut moved things.
+                store.playback.seek(to: Time(seconds: mode.isEmpty || mode == "select" ? 5.3 : 1))
+                try? await Task.sleep(for: .milliseconds(500))
+            }
+
             // OVERLAP_SNAPSHOT_PANELEND=1 scrolls the panel to its end before the captures below.
             if environment["OVERLAP_SNAPSHOT_PANELEND"] != nil, let content = NSApplication.shared.windows.first(where: \.isVisible)?.contentView {
                 func scrollViews(in view: NSView) -> [NSScrollView] {
@@ -1239,6 +1309,7 @@ enum DebugSnapshot {
                     "crossfade": crossfadeReport,
                     "textPlace": textPlaceReport,
                     "dropAsset": dropReport,
+                    "transcript": transcriptReport,
                     "dragTarget": dragSummary,
                     "menu": menuLines,
                     "moveDisplay": moveDisplay,

@@ -1,11 +1,13 @@
 import AppKit
 import SwiftUI
 
-/// One `.overlap` package: `Project.json` plus a `Media/` folder holding a copy of every imported file.
+/// One `.overlap` package: `Project.json`, a `Media/` folder holding a copy of every imported file, and, once
+/// videos are transcribed, `Transcripts.json`.
 @objc(ProjectDocument)
 final class ProjectDocument: NSDocument {
     nonisolated static let projectFileName = "Project.json"
     nonisolated static let mediaFolderName = "Media"
+    nonisolated static let transcriptsFileName = "Transcripts.json"
 
     let store: ProjectStore
 
@@ -18,6 +20,11 @@ final class ProjectDocument: NSDocument {
         super.init()
         store.undoManager = undoManager
         store.changed = { [weak self] in self?.autosaveSoon() }
+        // A finished transcript is saved like an edit, though there's nothing to undo.
+        store.transcriptsChanged = { [weak self] in
+            self?.updateChangeCount(.changeDone)
+            self?.autosaveSoon()
+        }
     }
 
     private var pendingAutosave: Task<Void, Never>?
@@ -63,8 +70,13 @@ final class ProjectDocument: NSDocument {
     override func read(from url: URL, ofType typeName: String) throws {
         let data = try Data(contentsOf: url.appending(path: Self.projectFileName))
         let project = try JSONDecoder().decode(Project.self, from: data)
+        // Transcripts can be made again, so a missing or unreadable file only means transcribing again.
+        let saved = (try? Data(contentsOf: url.appending(path: Self.transcriptsFileName)))
+            .flatMap { try? JSONDecoder().decode([String: Transcript].self, from: $0) } ?? [:]
+        let transcripts = Dictionary(uniqueKeysWithValues: saved.compactMap { key, value in UUID(uuidString: key).map { ($0, value) } })
         MainActor.assumeIsolated {
-            store.load(project, mediaDirectory: url.appending(path: Self.mediaFolderName, directoryHint: .isDirectory))
+            store.load(project, mediaDirectory: url.appending(path: Self.mediaFolderName, directoryHint: .isDirectory),
+                       transcripts: transcripts)
         }
     }
 
@@ -85,6 +97,11 @@ final class ProjectDocument: NSDocument {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             try encoder.encode(store.project).write(to: url.appending(path: Self.projectFileName))
+            let transcripts = store.transcriptsToSave
+            if !transcripts.isEmpty {
+                let keyed = Dictionary(uniqueKeysWithValues: transcripts.map { ($0.key.uuidString, $0.value) })
+                try JSONEncoder().encode(keyed).write(to: url.appending(path: Self.transcriptsFileName))
+            }
         }
     }
 
@@ -239,7 +256,7 @@ final class ProjectDocument: NSDocument {
     override func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         // Single-key shortcuts (Space, J, K, L, C, N, arrows, Delete) stay out of the way while typing in a text field.
         let isSingleKey = !menuItem.keyEquivalent.isEmpty && menuItem.keyEquivalentModifierMask.isDisjoint(with: [.command, .control, .option])
-        if isSingleKey, windowForSheet?.firstResponder is NSText {
+        if isSingleKey, let text = windowForSheet?.firstResponder as? NSText, text.isEditable {
             return false
         }
         switch menuItem.action {
@@ -253,6 +270,9 @@ final class ProjectDocument: NSDocument {
             menuItem.state = store.activeTab.rawValue == menuItem.tag ? .on : .off
             if menuItem.tag == PanelTab.transitions.rawValue {
                 return store.selectedTransition != nil
+            }
+            if menuItem.tag == PanelTab.transcript.rawValue {
+                return store.project.hasVideoClips
             }
         case #selector(togglePrototypeFades(_:)):
             menuItem.state = store.prototypeFades ? .on : .off

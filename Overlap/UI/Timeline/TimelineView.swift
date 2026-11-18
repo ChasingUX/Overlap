@@ -676,6 +676,11 @@ final class TimelineView: NSView {
             if let highlight = snapshot.loopHighlight, highlight.clip == clip.id {
                 drawLoopHighlight(highlight, on: clip, in: clipRect(clip, in: row))
             }
+            if let marks = snapshot.transcriptMarks {
+                let rect = clipRect(clip, in: row)
+                for range in marks.removable[clip.id] ?? [] { drawTranscriptMark(range, selected: false, on: clip, in: rect) }
+                for range in marks.selected[clip.id] ?? [] { drawTranscriptMark(range, selected: true, on: clip, in: rect) }
+            }
         }
         for crossfade in crossfades {
             drawCrossfade(crossfade, in: crossfadeRect(crossfade, in: row))
@@ -744,6 +749,38 @@ final class TimelineView: NSView {
         NSColor.controlAccentColor.setFill()
         for edge in [from, to - 2] where edge > rect.minX + 1 && edge < rect.maxX - 3 {
             CGRect(x: edge, y: rect.minY, width: 2, height: rect.height).fill()
+        }
+        NSGraphicsContext.restoreGraphicsState()
+    }
+
+    /// A stretch of a clip the Transcript tab points at, given in its source's seconds: a darkened gap with dashed
+    /// edges where Remove would take out a pause or filler, or an accent band, like a loop's, over selected words.
+    private func drawTranscriptMark(_ source: ClosedRange<Double>, selected: Bool, on clip: Clip, in rect: CGRect) {
+        let from = x(for: clip.start + Time(seconds: (source.lowerBound - clip.sourceStart.seconds) / clip.speed))
+        let to = x(for: clip.start + Time(seconds: (source.upperBound - clip.sourceStart.seconds) / clip.speed))
+        let band = CGRect(x: from, y: rect.minY, width: max(1, to - from), height: rect.height).intersection(rect)
+        guard !band.isNull, band.width > 0, band.maxX >= 0, band.minX <= bounds.width else { return }
+        NSGraphicsContext.saveGraphicsState()
+        NSBezierPath(roundedRect: rect, xRadius: Layout.clipRadius, yRadius: Layout.clipRadius).addClip()
+        if selected {
+            NSColor.controlAccentColor.withAlphaComponent(0.28).setFill()
+            band.fill()
+            NSColor.controlAccentColor.setFill()
+            for edge in [band.minX, band.maxX - 2] where band.width > 4 {
+                CGRect(x: edge, y: band.minY, width: 2, height: band.height).fill()
+            }
+        } else {
+            NSColor.black.withAlphaComponent(0.45).setFill()
+            band.fill()
+            NSColor.white.withAlphaComponent(0.45).setStroke()
+            for edge in [band.minX + 0.5, band.maxX - 0.5] {
+                let line = NSBezierPath()
+                line.move(to: CGPoint(x: edge, y: band.minY))
+                line.line(to: CGPoint(x: edge, y: band.maxY))
+                line.lineWidth = 1
+                line.setLineDash([2, 2], count: 2, phase: 0)
+                line.stroke()
+            }
         }
         NSGraphicsContext.restoreGraphicsState()
     }

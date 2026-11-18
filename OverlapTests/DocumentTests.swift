@@ -28,6 +28,25 @@ struct DocumentTests {
         #expect(reopened.store.mediaURL(for: asset).path == package.appending(path: "Media/song.m4a").path)
     }
 
+    @Test func transcriptsAreSavedWithTheProject() throws {
+        let package = FileManager.default.temporaryDirectory.appending(path: "\(UUID().uuidString).overlap", directoryHint: .isDirectory)
+        let document = ProjectDocument()
+        let video = Asset(id: UUID(), fileName: "talk.mov", displayName: "Talk.mov", kind: .video, duration: Time(seconds: 4), hasAudio: true)
+        var project = Project()
+        project.assets = [video]
+        project.addClip(asset: video.id, at: .zero, preferredTrack: 0)
+        let transcript = Transcript(words: [Transcript.Word(text: "Hello.", start: 0.5, end: 1)])
+        document.store.load(project, mediaDirectory: document.store.mediaDirectory, transcripts: [video.id: transcript])
+
+        try document.write(to: package, ofType: "com.chasingux.overlap.project", for: .saveOperation, originalContentsURL: nil)
+        #expect(FileManager.default.fileExists(atPath: package.appending(path: "Transcripts.json").path))
+
+        let reopened = ProjectDocument()
+        try reopened.read(from: package, ofType: "com.chasingux.overlap.project")
+        #expect(reopened.store.transcripts == [video.id: transcript])
+        #expect(reopened.store.timelineTranscript.items.count == 1)
+    }
+
     @Test func removedMediaIsLeftOutOfTheNextSave() throws {
         let package = FileManager.default.temporaryDirectory.appending(path: "\(UUID().uuidString).overlap", directoryHint: .isDirectory)
         let document = ProjectDocument()

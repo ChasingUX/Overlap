@@ -26,6 +26,10 @@ for the one-time step macOS asks for. After that, Overlap updates itself.
   places, a corner, the middle of an edge or the middle, a margin in from the edges as its text and size change,
   or sit wherever it's dragged. A shadow or plate reads over the picture, with animations in and out and one look
   for all; new text starts in the last title's look.
+- **Transcript:** once a video is on the timeline, the Transcript tab writes out what's said, on the Mac, with
+  Apple's speech recognition. The word being heard is lit as it plays; click a word to go to it, or select words
+  and press Delete to cut them from the video. Pauses and filler words are marked, there and on the timeline, for
+  one button to take out.
 - **Sound:** per-clip volume, Isolate voice to take out background noise, and a master volume. Exports can be
   brought to the loudness streaming services play at.
 - **Loops:** finds where a video repeats, or the best places it can loop, and trims a clip to a loop.

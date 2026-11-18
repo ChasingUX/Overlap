@@ -16,6 +16,14 @@ struct TimelineSnapshot {
     var thumbnails: [UUID: CGImage]
     var filmstrips: [UUID: Filmstrip]
     var loopHighlight: LoopHighlight?
+    var transcriptMarks: TranscriptMarks?
+}
+
+/// While the Transcript tab shows: per clip, the stretches Remove Pauses and Fillers would take out and those the
+/// selected words cover, in the clip's source seconds, so they move with the clip.
+struct TranscriptMarks: Equatable {
+    var removable: [UUID: [ClosedRange<Double>]]
+    var selected: [UUID: [ClosedRange<Double>]]
 }
 
 /// A loop pointed at in the Video tab: the stretch of its clip's source, in seconds, to shade on the clip.
@@ -77,7 +85,8 @@ struct TimelineRepresentable: NSViewRepresentable {
             isolatedWaveforms: store.isolatedWaveforms,
             thumbnails: store.thumbnails,
             filmstrips: store.filmstrips,
-            loopHighlight: store.highlightedLoop
+            loopHighlight: store.highlightedLoop,
+            transcriptMarks: store.transcriptMarks
         )
     }
 }

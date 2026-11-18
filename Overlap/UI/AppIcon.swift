@@ -10,6 +10,7 @@ enum AppIcon {
     case video
     case audio
     case text
+    case transcript
     case transitions
     case zoom
     case importMedia
@@ -30,6 +31,7 @@ enum AppIcon {
         case .video: "video"
         case .audio: "waveform"
         case .text: "textformat"
+        case .transcript: "quote.bubble"
         case .transitions: "square.on.square.dashed"
         case .zoom: "plus.magnifyingglass"
         case .importMedia: "plus"

@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// The icon rail: Canvas, the clip tabs, then Media, evenly spaced. Selecting a clip opens its tab, so the rail
+/// The icon rail: Canvas, the clip tabs, Transcript once there's a video, then Media, evenly spaced. Selecting a clip opens its tab, so the rail
 /// needs no marks for the selection. A tab's name and shortcut show beside it after a moment's hover, sooner than
 /// a system tooltip, and at once going from one tab to the next.
 struct RailView: View {
@@ -12,8 +12,10 @@ struct RailView: View {
 
     var body: some View {
         VStack(spacing: 12) {
-            ForEach(PanelTab.allCases.filter { !$0.isContextual }) { tab in
+            // Transcript only once there's a video on the timeline to transcribe.
+            ForEach(PanelTab.allCases.filter { !$0.isContextual && ($0 != .transcript || store.project.hasVideoClips) }) { tab in
                 button(for: tab)
+                    .transition(.opacity.combined(with: .scale(scale: 0.8)))
             }
             // Transitions and Zoom join the bottom only while a crossfade or zoom is selected, so nothing above moves.
             if store.selectedTransition != nil {
@@ -28,6 +30,7 @@ struct RailView: View {
         }
         .padding(.vertical, 12)
         .frame(width: Self.width)
+        .animation(.easeOut(duration: 0.2), value: store.project.hasVideoClips)
     }
 
     private func button(for tab: PanelTab) -> some View {
@@ -160,6 +163,8 @@ struct PanelView: View {
             ZoomPanel(store: store)
         case .text:
             TextPanel(store: store)
+        case .transcript:
+            TranscriptPanel(store: store)
         }
     }
 }

@@ -442,10 +442,6 @@ extension Project {
         return Clip(assetID: assetID, start: max(.zero, start), sourceStart: .zero, duration: duration)
     }
 
-    private var hasVideoClips: Bool {
-        tracks.contains { $0.clips.contains { asset($0.assetID)?.kind == .video } }
-    }
-
     /// Adds a text clip, five seconds long.
     @discardableResult
     mutating func addTitle(_ title: Title, visual: Visual = Visual(), at start: Time, target: TrackTarget) -> Clip {
