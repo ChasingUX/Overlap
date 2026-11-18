@@ -109,6 +109,8 @@ struct Track: Identifiable, Hashable, Sendable, Codable {
     var isSoloed = false
     var isLocked = false
     var height: Double = 56
+    /// A captions track shows the transcript as captions in this look, and keeps no clips of its own.
+    var captions: Captions?
 }
 
 /// The size pictures are composed at. The rate they play at is the project's `frameRate`; projects saved when
@@ -321,7 +323,8 @@ extension Project {
     /// play at once. Locked tracks take nothing.
     func isFree(track index: Int, range: TimeRange, excluding: UUID? = nil) -> Bool {
         guard tracks.indices.contains(index) else { return true }
-        guard !tracks[index].isLocked else { return false }
+        // Locked tracks take nothing, and a captions track only its captions.
+        guard !tracks[index].isLocked, tracks[index].captions == nil else { return false }
         let others = tracks[index].clips.filter { $0.id != excluding }.map(\.range)
         for other in others where other.overlaps(range) {
             let coversOther = range.start <= other.start && other.end <= range.end
@@ -369,9 +372,18 @@ extension Project {
         while index < tracks.count, !isFree(track: index, range: range, excluding: excluding) {
             index += 1
         }
-        while index >= tracks.count {
-            tracks.append(Track(name: "Track \(tracks.count + 1)"))
+        guard index < tracks.count else {
+            let top = topTrackIndex
+            tracks.insert(Track(name: "Track \(tracks.count + 1)"), at: top)
+            return top
         }
+        return index
+    }
+
+    /// Where a new track at the top goes: under captions kept at the top, so nothing added covers them.
+    var topTrackIndex: Int {
+        var index = tracks.count
+        while index > 0, tracks[index - 1].captions != nil { index -= 1 }
         return index
     }
 
@@ -383,7 +395,7 @@ extension Project {
         case let .existing(id):
             index = trackForPlacement(preferred: tracks.firstIndex { $0.id == id } ?? tracks.count, range: clip.range, excluding: clip.id)
         case let .new(position):
-            index = position.clamped(to: 0...tracks.count)
+            index = min(position.clamped(to: 0...tracks.count), topTrackIndex)
             tracks.insert(Track(name: "Track \(tracks.count + 1)"), at: index)
         }
         insert(clip, onTrack: index)
@@ -510,7 +522,10 @@ extension Project {
 
     /// Keeps the timeline tidy: tracks without clips are removed. New tracks appear when clips are dropped above or below the others.
     mutating func normalizeTracks() {
-        tracks.removeAll { $0.clips.isEmpty }
+        // A captions track has no clips of its own, and stays until its captions are removed. It draws above the rest,
+        // as the timeline shows its captions over the clips they come from rather than on a row of their own.
+        tracks.removeAll { $0.clips.isEmpty && $0.captions == nil }
+        tracks = tracks.filter { $0.captions == nil } + tracks.filter { $0.captions != nil }
     }
 
     /// Moves a track to a new index; the tracks between shift to make room.

@@ -26,6 +26,12 @@ extension Transcript.Word {
     }
 }
 
+/// A word's place in its file's transcript.
+struct WordSource: Hashable, Sendable {
+    var asset: UUID
+    var index: Int
+}
+
 /// A stretch of one clip, in timeline time, to take out.
 struct TranscriptCut: Hashable, Sendable {
     var clip: UUID
@@ -75,6 +81,8 @@ struct TimelineTranscript: Equatable {
     }
 
     var paragraphs: [Paragraph] = []
+    /// Where each of `items` comes from: a word's place in its file's transcript, nil for a pause.
+    var sources: [WordSource?] = []
 
     /// The shortest silence between words that's marked as a pause.
     static let pauseLength = Time(seconds: 1)
@@ -179,6 +187,7 @@ extension Project {
     /// What each spoken clip says, from its file's transcript, timed on the timeline.
     func timelineTranscript(_ transcripts: [UUID: Transcript]) -> TimelineTranscript {
         var paragraphs: [TimelineTranscript.Paragraph] = []
+        var sources: [WordSource?] = []
         for clip in spokenClips {
             guard let transcript = transcripts[clip.assetID] else { continue }
             let from = clip.sourceStart.seconds
@@ -187,17 +196,18 @@ extension Project {
                 clip.start + Time(seconds: (min(max(seconds, from), to) - from) / clip.speed)
             }
             // A word counts where it starts; one cut off at the clip's end still shows.
-            let words = transcript.words.filter { $0.start >= from - 0.01 && $0.start < to }
+            let words = transcript.words.enumerated().filter { $0.element.start >= from - 0.01 && $0.element.start < to }
             var paragraph: [TimelineTranscript.Item] = []
             var count = 0
             var previous: (word: Transcript.Word, end: Time)?
-            for word in words {
+            for (index, word) in words {
                 let range = TimeRange(from: onTimeline(word.start), to: onTimeline(word.end))
                 if let previous {
                     let gap = TimeRange(from: previous.end, to: range.start)
                     // A pause ends the sentence it follows, so a paragraph after it starts with its words.
                     if gap.duration >= TimelineTranscript.pauseLength {
                         paragraph.append(.pause(range: gap, clip: clip.id))
+                        sources.append(nil)
                     }
                     if previous.word.endsSentence, count >= TimelineTranscript.paragraphWords || gap.duration >= TimelineTranscript.paragraphPause {
                         paragraphs.append(TimelineTranscript.Paragraph(items: paragraph))
@@ -206,12 +216,13 @@ extension Project {
                     }
                 }
                 paragraph.append(.word(text: word.text, range: range, isFiller: word.isFiller, clip: clip.id))
+                sources.append(WordSource(asset: clip.assetID, index: index))
                 count += 1
                 previous = (word, range.end)
             }
             if !paragraph.isEmpty { paragraphs.append(TimelineTranscript.Paragraph(items: paragraph)) }
         }
-        return TimelineTranscript(paragraphs: paragraphs)
+        return TimelineTranscript(paragraphs: paragraphs, sources: sources)
     }
 
     /// The shortest stretch a cut takes out; anything less is left alone.

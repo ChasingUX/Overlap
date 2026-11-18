@@ -1,10 +1,21 @@
 import AppKit
 import CoreText
+import Synchronization
 
 /// Draws a text clip's text, its backdrop or shadow if it has one, into an image sized to fit. The text is laid out
 /// at the canvas's scale: a size of 96 is 96 pixels tall on a 1080-pixel canvas.
 enum TitleRenderer {
-    static func image(for title: Title, canvas: CGSize) -> CGImage? {
+    /// How a title's text is set: the framesetter, the text's own size, the room around it, and the whole image's.
+    private struct Layout {
+        var framesetter: CTFramesetter
+        var textSize: CGSize
+        var inset: CGSize
+        var size: CGSize
+        var pointSize: CGFloat
+        var blur: CGFloat
+    }
+
+    private static func layout(for title: Title, canvas: CGSize) -> Layout {
         let scale = canvas.height / 1080
         let pointSize = CGFloat(title.size) * scale
         let font = font(for: title, size: pointSize)
@@ -17,11 +28,18 @@ enum TitleRenderer {
         }
         paragraph.lineHeightMultiple = 1.05
         let color = CGColor(srgbRed: title.color.red, green: title.color.green, blue: title.color.blue, alpha: title.color.alpha)
-        let text = NSAttributedString(string: title.text.isEmpty ? " " : title.text, attributes: [
+        let text = NSMutableAttributedString(string: title.text.isEmpty ? " " : title.text, attributes: [
             .font: font,
             .foregroundColor: color,
             .paragraphStyle: paragraph,
         ])
+        // A caption lighting the word being said dims the rest.
+        if let lit = title.litWord, let words = title.spokenWords, words.indices.contains(lit) {
+            let dimmed = CGColor(srgbRed: title.color.red, green: title.color.green, blue: title.color.blue, alpha: title.color.alpha * 0.5)
+            text.addAttribute(.foregroundColor, value: dimmed, range: NSRange(location: 0, length: text.length))
+            let word = NSRange(location: words[lit].location, length: words[lit].length)
+            if NSMaxRange(word) <= text.length { text.addAttribute(.foregroundColor, value: color, range: word) }
+        }
 
         let framesetter = CTFramesetterCreateWithAttributedString(text)
         let maxWidth = canvas.width * 0.9
@@ -32,6 +50,38 @@ enum TitleRenderer {
         let inset = title.backdrop != nil ? CGSize(width: pointSize * 0.45, height: pointSize * 0.3)
             : title.shadow ? CGSize(width: blur * 1.5, height: blur * 1.5) : CGSize(width: 2, height: 2)
         let size = CGSize(width: textSize.width + inset.width * 2, height: textSize.height + inset.height * 2)
+        return Layout(framesetter: framesetter, textSize: textSize, inset: inset, size: size, pointSize: pointSize, blur: blur)
+    }
+
+    private struct SizeKey: Hashable {
+        var title: Title
+        var width: Double
+        var height: Double
+    }
+
+    private static let sizes = Mutex<[SizeKey: CGSize]>([:])
+
+    /// The size of the image `image(for:canvas:)` draws, without drawing it. Captions measure every phrase each time
+    /// the project changes, so sizes are kept.
+    static func size(for title: Title, canvas: CGSize) -> CGSize {
+        var plain = title
+        plain.spokenWords = nil
+        plain.litWord = nil
+        plain.captionOf = nil
+        let key = SizeKey(title: plain, width: canvas.width, height: canvas.height)
+        if let known = sizes.withLock({ $0[key] }) { return known }
+        let size = layout(for: plain, canvas: canvas).size
+        sizes.withLock { sizes in
+            if sizes.count > 4000 { sizes.removeAll() }
+            sizes[key] = size
+        }
+        return size
+    }
+
+    static func image(for title: Title, canvas: CGSize) -> CGImage? {
+        let layout = layout(for: title, canvas: canvas)
+        let size = layout.size
+        let pointSize = layout.pointSize
         guard size.width >= 1, size.height >= 1,
               let context = CGContext(data: nil, width: Int(size.width), height: Int(size.height), bitsPerComponent: 8, bytesPerRow: 0,
                                       space: CGColorSpace(name: CGColorSpace.sRGB)!,
@@ -45,11 +95,12 @@ enum TitleRenderer {
         }
         if title.shadow, title.backdrop == nil {
             // Soft and a little below the letters, dark enough to lift white text off a light picture.
-            context.setShadow(offset: CGSize(width: 0, height: -pointSize * 0.04), blur: blur,
+            context.setShadow(offset: CGSize(width: 0, height: -pointSize * 0.04), blur: layout.blur,
                               color: CGColor(srgbRed: 0, green: 0, blue: 0, alpha: 0.6))
         }
-        let path = CGPath(rect: CGRect(x: inset.width, y: inset.height, width: textSize.width, height: textSize.height), transform: nil)
-        let frame = CTFramesetterCreateFrame(framesetter, CFRange(), path, nil)
+        let path = CGPath(rect: CGRect(x: layout.inset.width, y: layout.inset.height, width: layout.textSize.width,
+                                       height: layout.textSize.height), transform: nil)
+        let frame = CTFramesetterCreateFrame(layout.framesetter, CFRange(), path, nil)
         CTFrameDraw(frame, context)
         return context.makeImage()
     }

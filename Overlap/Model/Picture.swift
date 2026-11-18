@@ -254,6 +254,16 @@ enum TitleAnimation: String, Hashable, Sendable, Codable, CaseIterable {
     static let duration = 0.5
 }
 
+/// One word of a caption: when it's said, in seconds from the caption's start, where it is in the caption's text, in
+/// UTF-16 units, and where it came from in the transcript.
+struct SpokenWord: Hashable, Sendable {
+    var start: Double
+    var end: Double
+    var location: Int
+    var length: Int
+    var source: WordSource?
+}
+
 /// A text clip's text and look. Where it sits, how large and how opaque come from the clip's `Visual`.
 struct Title: Hashable, Sendable, Codable {
     var text: String
@@ -276,6 +286,28 @@ struct Title: Hashable, Sendable, Codable {
     var anchor: TitleAnchor?
     /// How far in from the canvas's edges a title on a corner or an edge sits, as a share of the shorter side.
     var margin = Title.defaultMargin
+    /// A caption's words and when each is said; nil for other text. Captions are made from the transcript as the
+    /// project plays, so these are never saved.
+    var spokenWords: [SpokenWord]?
+    /// Lights the word being said and dims the rest.
+    var highlightsSpokenWord = false
+    /// The word lit in the frame being drawn, set as it's drawn.
+    var litWord: Int?
+    /// The clip a caption's words are said in, which it shows above on the timeline.
+    var captionOf: UUID?
+
+    /// What's saved; a caption's words and lit word are made again as it plays.
+    enum CodingKeys: String, CodingKey {
+        case text, fontFamily, size, weight, color, alignment, backdrop, animationIn, animationOut, shadow, anchor, margin
+    }
+
+    /// The caption's look `elapsed` seconds in: with the word last begun lit, while it lights the spoken word.
+    func lit(at elapsed: Double) -> Title {
+        guard highlightsSpokenWord, let words = spokenWords else { return self }
+        var lit = self
+        lit.litWord = words.lastIndex { $0.start <= elapsed }
+        return lit
+    }
 
     static let defaultMargin = 0.06
     static let marginRange = 0.0...0.15

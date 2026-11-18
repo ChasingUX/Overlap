@@ -55,6 +55,8 @@ enum Theme {
     static let controlFillEnd = gray(0x33)
     /// The channel a clip's zoom bars sit in, above it on the timeline.
     static let zoomTrack = gray(0x1C)
+    /// A caption in its lane above the clip that says it.
+    static let captionChip = gray(0x3C)
     /// The rail's tooltips, a step lighter than the chrome they float over.
     static let tooltip = gray(0x2A)
     /// Native sliders are tinted gray instead of the accent blue.

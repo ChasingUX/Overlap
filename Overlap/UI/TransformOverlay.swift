@@ -23,6 +23,8 @@ final class TransformOverlay: NSView {
         var editingTitle: UUID?
         /// The selected zoom, while paused: its clip shows whole, with the region it zooms into to drag.
         var aimedZoom: ProjectStore.ZoomSelection?
+        /// The captions track selected, whose caption on screen is outlined.
+        var selectedCaptions: UUID?
     }
 
     /// Dragging a zoom's region: its middle moves it, a corner sizes it from the opposite corner.
@@ -203,6 +205,12 @@ final class TransformOverlay: NSView {
         }
     }
 
+    /// The caption on screen, while its captions are selected.
+    private var selectedCaption: Clip? {
+        guard let state, let track = state.selectedCaptions else { return nil }
+        return visibleClips.first { state.project.captionsTrack(ofClip: $0.id) == track }
+    }
+
     /// The picture showing handles: clicked in the preview, still the selection, and showing at the playhead.
     private var selectedClip: Clip? {
         guard let state, let id = state.handlesClip, state.selection == [id] else { return nil }
@@ -354,8 +362,14 @@ final class TransformOverlay: NSView {
     override func draw(_ dirtyRect: NSRect) {
         if let canvasResize { return drawCanvasResize(canvasResize) }
         if let aimed { return drawAim(aimed) }
-        // The editor stands in for the handles while text is typed.
-        guard titleEditor == nil, let clip = selectedClip else { return drawGuides() }
+        // The editor stands in for the handles while text is typed. Selected captions are outlined, without handles:
+        // their place is set in the Text tab.
+        guard titleEditor == nil, let clip = selectedClip else {
+            if titleEditor == nil, let caption = selectedCaption, let points = corners(of: caption, visual: caption.visual)?.map(view) {
+                captionOutline(points)
+            }
+            return drawGuides()
+        }
         let visual = visual(of: clip)
         guard let points = corners(of: clip, visual: visual)?.map(view) else { return drawGuides() }
 
@@ -437,6 +451,18 @@ final class TransformOverlay: NSView {
         case .left: (points[3], points[0])
         }
         return CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2)
+    }
+
+    /// Selected captions show a quiet ring just outside the caption on screen, rounded as its plate is: they have no
+    /// handles, so it only says which text the Text tab is changing.
+    private func captionOutline(_ points: [CGPoint]) {
+        let xs = points.map(\.x), ys = points.map(\.y)
+        let box = CGRect(x: xs.min()!, y: ys.min()!, width: xs.max()! - xs.min()!, height: ys.max()! - ys.min()!).insetBy(dx: -3, dy: -3)
+        let radius = min(box.height / 2, 8)
+        let ring = NSBezierPath(roundedRect: box, xRadius: radius, yRadius: radius)
+        ring.lineWidth = 1
+        NSColor.white.withAlphaComponent(0.35).setStroke()
+        ring.stroke()
     }
 
     private func outline(_ points: [CGPoint], dashed: Bool) {
@@ -832,6 +858,12 @@ final class TransformOverlay: NSView {
 
     private func target(at point: CGPoint) -> (clip: Clip, drag: Drag)? {
         if let clip = selectedClip, let found = handle(of: clip, at: point) {
+            // A caption over a selected picture takes a click inside it, so a full-screen video selected under the
+            // captions doesn't keep them from being clicked. The picture's corner and turn handles still come first.
+            if case .move = found, let state, let caption = visibleClips.first(where: { state.project.captionsTrack(ofClip: $0.id) != nil }),
+               let points = corners(of: caption, visual: caption.visual)?.map(view), contains(points, point) {
+                return (caption, .move(start: caption.visual, from: canvasPoint(point)))
+            }
             return (clip, found)
         }
         for clip in visibleClips {
@@ -907,6 +939,12 @@ final class TransformOverlay: NSView {
             store.select([])
             store.handlesClip = nil
             store.isCropping = false
+            return
+        }
+        // A caption selects its captions; they don't drag, as their timing and place are the transcript's and
+        // the Text tab's.
+        if state?.project.captionsTrack(ofClip: clip.id) != nil {
+            store.select([clip.id])
             return
         }
         if state?.selection != [clip.id] { store.select([clip.id]) }
@@ -1150,6 +1188,19 @@ final class TransformOverlay: NSView {
             return menu
         }
         let isCropping = state?.isCropping == true && state?.handlesClip == clip.id
+        // A caption offers fixing its words, and taking the captions off.
+        if state?.project.captionsTrack(ofClip: clip.id) != nil {
+            store.select([clip.id])
+            let menu = NSMenu()
+            let edit = NSMenuItem(title: "Edit Caption", action: #selector(contextEditText(_:)), keyEquivalent: "")
+            edit.target = self
+            edit.representedObject = clip.id
+            menu.addItem(edit)
+            let remove = NSMenuItem(title: "Remove Captions", action: #selector(contextRemoveCaptions), keyEquivalent: "")
+            remove.target = self
+            menu.addItem(remove)
+            return menu
+        }
         if state?.selection != [clip.id] { store.select([clip.id]) }
         store.handlesClip = clip.id
 
@@ -1186,6 +1237,23 @@ final class TransformOverlay: NSView {
 
     @objc private func contextAddZoom(_ item: NSMenuItem) {
         if let id = item.representedObject as? UUID, let time = state?.time { store.addZoom(to: id, at: time) }
+    }
+
+    #if DEBUG
+    /// For the debug self-check: whether a click in the middle of the caption on screen would reach it, and which
+    /// clip a click there finds.
+    func debugCaptionHit() -> [String: Any] {
+        guard let state, let caption = visibleClips.first(where: { state.project.captionsTrack(ofClip: $0.id) != nil }),
+              let points = corners(of: caption, visual: caption.visual)?.map(view) else { return ["caption": false] }
+        let center = CGPoint(x: points.map(\.x).reduce(0, +) / 4, y: points.map(\.y).reduce(0, +) / 4)
+        let reaches = superview.map { hitTest(convert(center, to: $0)) === self } ?? false
+        return ["caption": true, "text": caption.title?.text ?? "", "reaches": reaches,
+                "finds": target(at: center)?.clip.id == caption.id, "time": state.time.seconds]
+    }
+    #endif
+
+    @objc private func contextRemoveCaptions() {
+        store.deleteSelection()
     }
 
     @objc private func contextEditText(_ item: NSMenuItem) {

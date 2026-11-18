@@ -76,6 +76,9 @@ struct PendingImport: Identifiable {
 @Observable
 final class ProjectStore {
     private(set) var project: Project
+    /// The project as it plays and shows: with each captions track's captions made from the transcript. Playback,
+    /// export, the timeline and the preview's handles all draw this.
+    private(set) var shownProject: Project
     private(set) var selection: Set<UUID> = []
     /// The panel shown. Selecting clips opens the tab that edits them, and clearing the selection goes back to the
     /// tab that left, unless you picked a tab yourself in between.
@@ -152,6 +155,7 @@ final class ProjectStore {
         var project = project
         project.normalizeTracks()
         self.project = project
+        shownProject = project
         self.mediaDirectory = mediaDirectory
         // A zoom being aimed shows its clip whole while paused, and zoomed as it plays.
         playback.onPlayingChange = { [weak self] _ in self?.showAimedClip() }
@@ -169,6 +173,7 @@ final class ProjectStore {
         avAssets = [:]
         installedLayout = nil
         selection = []
+        selectedCaptions = nil
         transcribeTask?.cancel()
         transcribeTask = nil
         transcribing = nil
@@ -242,10 +247,15 @@ final class ProjectStore {
 
     private func projectDidChange() {
         handlesPreview = nil
+        // The transcript and captions first: the stage, the selection and playback go by them.
+        refreshTranscript()
+        if let captions = selectedCaptions, !project.tracks.contains(where: { $0.id == captions && $0.captions != nil }) {
+            selectedCaptions = nil
+        }
         updateStage()
         let clipIDs = Set(project.tracks.flatMap(\.clips).map(\.id))
         selection = selection.intersection(clipIDs)
-        if selection.isEmpty { leaveSelectionTab() }
+        if selection.isEmpty, selectedCaptions == nil { leaveSelectionTab() }
         // A crossfade or zoom that no longer exists closes its tab.
         if let transition = selectedTransition, project.crossfade(into: transition) == nil {
             selectTransition(nil)
@@ -255,7 +265,6 @@ final class ProjectStore {
         }
         // The Transcript tab goes with the last video on the timeline.
         if activeTab == .transcript, !project.hasVideoClips { activeTab = .media }
-        refreshTranscript()
         playback.setMasterVolume(project.masterVolume)
         rebuildPlayback()
         analyzeIsolatedVoices()
@@ -263,7 +272,7 @@ final class ProjectStore {
 
     func rebuildPlayback() {
         rebuildTask?.cancel()
-        let project = project
+        let project = shownProject
         let options = CompositionBuilder.Options(prototypeFades: prototypeFades, master: playback.masterGain)
         let layout = CompositionBuilder.layout(of: project)
         let mix = CompositionBuilder.mix(of: project, options: options)
@@ -299,9 +308,15 @@ final class ProjectStore {
     func previewLook(_ change: (inout Project) -> Void) {
         var preview = project
         change(&preview)
-        playback.plan?.update { $0.takeLook(from: preview) { self.resolve($0) } }
+        let shown = shown(preview)
+        playback.plan?.update { $0.takeLook(from: shown) { self.resolve($0) } }
         playback.redrawPicture()
-        updateStage(for: preview)
+        updateStage(for: shown)
+    }
+
+    /// A project as it plays and shows, with its captions made.
+    func shown(_ project: Project) -> Project {
+        project.withCaptions(timelineTranscript)
     }
 
     /// What the preview shows while nothing on the timeline has a picture: the background, as it plays and
@@ -309,7 +324,7 @@ final class ProjectStore {
     private(set) var stageImage: CGImage?
 
     private func updateStage(for project: Project? = nil) {
-        let project = project ?? self.project
+        let project = project ?? shownProject
         guard !project.hasVisualClips else {
             stageImage = nil
             return
@@ -344,8 +359,13 @@ final class ProjectStore {
 
     /// Starts typing into a text clip on the canvas.
     func beginEditingTitle(_ id: UUID) {
-        guard project.clip(id)?.title != nil, !project.isLocked(clip: id) else { return }
-        if selection != [id] { select([id]) }
+        guard shownProject.clip(id)?.title != nil, !shownProject.isLocked(clip: id) else { return }
+        // A caption is fixed word by word in the transcript; its captions stay selected while it's typed into.
+        if let track = shownProject.captionsTrack(ofClip: id) {
+            if selectedCaptions != track { selectCaptions(track) }
+        } else if selection != [id] {
+            select([id])
+        }
         handlesClip = id
         editingTitleClip = id
         playback.plan?.update { $0.hiddenClip = id }
@@ -357,6 +377,15 @@ final class ProjectStore {
         guard let id = editingTitleClip else { return }
         editingTitleClip = nil
         playback.plan?.update { $0.hiddenClip = nil }
+        if let caption = shownProject.clip(id), shownProject.captionsTrack(ofClip: id) != nil {
+            let words = caption.title?.spokenWords?.compactMap(\.source) ?? []
+            if let text, text != caption.title?.text, !words.isEmpty {
+                correctWords(words, to: text)
+            } else {
+                playback.redrawPicture()
+            }
+            return
+        }
         if let text, text != project.clip(id)?.title?.text {
             apply("Edit Text") { Self.changeTitles(of: [id], in: &$0) { $0.text = text } }
         } else {
@@ -378,6 +407,8 @@ final class ProjectStore {
 
     /// Changes the selected text clips' text or look, as one undo step.
     func setTitle(_ name: String, _ change: @escaping (inout Title) -> Void) {
+        // With captions selected, the Text tab changes their look.
+        if selectedCaptions != nil { return changeCaptions(name) { change(&$0.look) } }
         let ids = editableSelection.filter { project.clip($0)?.title != nil }
         guard !ids.isEmpty else { return }
         lastChangedTitle = ids.first
@@ -389,10 +420,14 @@ final class ProjectStore {
 
     /// Shows a text change on the selected text clips while it's being made.
     func previewTitle(_ change: @escaping (inout Title) -> Void) {
-        let ids = editableSelection.filter { project.clip($0)?.title != nil }
         var preview = project
-        Self.changeTitles(of: ids, in: &preview, change)
-        handlesPreview = preview
+        if let track = selectedCaptions, let index = preview.tracks.firstIndex(where: { $0.id == track }) {
+            if preview.tracks[index].captions != nil { change(&preview.tracks[index].captions!.look) }
+        } else {
+            let ids = editableSelection.filter { project.clip($0)?.title != nil }
+            Self.changeTitles(of: ids, in: &preview, change)
+        }
+        handlesPreview = shown(preview)
         previewLook { $0 = preview }
     }
 
@@ -633,8 +668,9 @@ final class ProjectStore {
 
     /// Deletes the selected clips. Closing gaps pulls later clips on each track back.
     func deleteSelection(closingGaps: Bool = false) {
-        // A selected zoom is what Delete removes.
+        // A selected zoom is what Delete removes, and selected captions go together.
         if selectedZoom != nil { return deleteSelectedZoom() }
+        if let track = selectedCaptions { return removeCaptions(track) }
         let ids = editableSelection
         guard !ids.isEmpty else { return }
         apply(closingGaps ? "Delete and Close Gap" : (ids.count == 1 ? "Delete Clip" : "Delete Clips")) {
@@ -684,10 +720,10 @@ final class ProjectStore {
 
     /// The project as the timeline draws it, including a speed still being dragged.
     var timelineProject: Project {
-        guard let speedPreview else { return project }
+        guard let speedPreview else { return shownProject }
         var preview = project
         preview.setSpeed(speedPreview, for: editableSelection)
-        return preview
+        return shown(preview)
     }
 
     func setSpeed(_ speed: Double) {
@@ -738,6 +774,7 @@ final class ProjectStore {
     /// Selecting a crossfade clears the clip selection and opens the Transitions tab.
     func selectTransition(_ incoming: UUID?) {
         if let incoming {
+            selectedCaptions = nil
             selectZoom(nil)
             previousTab = activeTab.isContextual ? previousTab : (tabBeforeSelection ?? activeTab)
             tabBeforeSelection = nil
@@ -776,6 +813,7 @@ final class ProjectStore {
     /// Selects a zoom, opening the Zoom tab as a crossfade opens Transitions; nil closes it.
     func selectZoom(_ target: ZoomSelection?) {
         if let target {
+            selectedCaptions = nil
             if selectedTransition != nil { selectTransition(nil) }
             previousTab = activeTab.isContextual ? previousTab : (tabBeforeSelection ?? activeTab)
             tabBeforeSelection = nil
@@ -1119,7 +1157,7 @@ final class ProjectStore {
         exportProgress = Exporter.Progress(stage: project.normalizesLoudness ? .measuring : .writing, fraction: 0)
         exportTask = Task {
             do {
-                let job = try await Exporter.job(for: project, assets: { self.avAsset(for: $0) }, settings: settings, destination: destination)
+                let job = try await Exporter.job(for: shownProject, assets: { self.avAsset(for: $0) }, settings: settings, destination: destination)
                 try await Exporter.run(job) { progress in
                     Task { @MainActor in
                         // Only forward, so the bar never slips back if two reports arrive out of order.
@@ -1168,6 +1206,13 @@ final class ProjectStore {
     // MARK: Selection
 
     func select(_ ids: Set<UUID>) {
+        // Clicking a caption selects its captions, which are styled and removed together.
+        let captions = Set(ids.compactMap { shownProject.captionsTrack(ofClip: $0) })
+        let ids = ids.filter { shownProject.captionsTrack(ofClip: $0) == nil }
+        if ids.isEmpty, let track = captions.first {
+            return selectCaptions(track)
+        }
+        selectedCaptions = nil
         if !ids.isEmpty {
             selectTransition(nil)
             selectZoom(nil)
@@ -1316,7 +1361,7 @@ final class ProjectStore {
         var frame = preview.frame ?? PictureFrame()
         change(&frame)
         preview.frame = frame
-        handlesPreview = preview
+        handlesPreview = shown(preview)
         previewLook { $0 = preview }
     }
 
@@ -1520,14 +1565,19 @@ final class ProjectStore {
         }
     }
 
-    private func refreshTranscript() {
+    /// Brings the transcript, and the captions made from it, up to date with the project. `rebuilding` rebuilds
+    /// playback when the captions changed, for changes to the transcript itself; an edit rebuilds it anyway.
+    private func refreshTranscript(rebuilding: Bool = false) {
         var known = transcripts
         if let transcribing { known[transcribing.asset] = Transcript(words: transcribedSoFar) }
         let updated = project.timelineTranscript(known)
-        if updated != timelineTranscript {
+        let changed = updated != timelineTranscript
+        if changed {
             timelineTranscript = updated
             transcriptSelection = []
         }
+        shownProject = shown(project)
+        if rebuilding, changed, project.hasCaptions { rebuildPlayback() }
     }
 
     /// Writes out what's said in every video on the timeline that hasn't been, one at a time, on this Mac.
@@ -1546,7 +1596,7 @@ final class ProjectStore {
                             guard let self, self.transcribing?.asset == asset.id else { return }
                             self.transcribedSoFar = progress.words
                             self.transcribing = (asset.id, progress.seconds, asset.duration.seconds, progress.isPreparing)
-                            self.refreshTranscript()
+                            self.refreshTranscript(rebuilding: true)
                         }
                     }
                     guard !Task.isCancelled else { return }
@@ -1564,7 +1614,7 @@ final class ProjectStore {
             transcribing = nil
             transcribedSoFar = []
             transcribeTask = nil
-            refreshTranscript()
+            refreshTranscript(rebuilding: true)
         }
     }
 
@@ -1607,6 +1657,105 @@ final class ProjectStore {
         }
         return TranscriptMarks(removable: transcribing == nil ? bySource(timelineTranscript.removable) : [:],
                                selected: bySource(transcriptSelection))
+    }
+
+    // MARK: Captions
+
+    /// The captions track selected: clicking any caption selects them all, as they share one look.
+    private(set) var selectedCaptions: UUID?
+
+    /// The selected captions track and its captions.
+    var selectedCaptionsTrack: (id: UUID, captions: Captions)? {
+        guard let id = selectedCaptions, let track = project.tracks.first(where: { $0.id == id }), let captions = track.captions else { return nil }
+        return (id, captions)
+    }
+
+    /// A caption as the Text tab shows the captions' look: the one on screen, or the first.
+    var representativeCaption: Clip? {
+        guard let id = selectedCaptions, let track = shownProject.tracks.first(where: { $0.id == id }) else { return nil }
+        let time = playback.currentTime
+        return track.clips.first { $0.start <= time && time < $0.end } ?? track.clips.first
+    }
+
+    func selectCaptions(_ track: UUID) {
+        selectTransition(nil)
+        selectZoom(nil)
+        selection = []
+        handlesClip = nil
+        isCropping = false
+        selectedCaptions = track
+        // The Text tab styles them; deselecting goes back to the tab that was showing.
+        if activeTab != .text {
+            if activeTab.isProjectTab { tabBeforeSelection = activeTab }
+            activeTab = .text
+            isPanelVisible = true
+        }
+    }
+
+    /// Puts the transcript on screen as captions, on a track of their own above the rest, and selects them.
+    func addCaptions() {
+        guard !project.hasCaptions else { return }
+        let track = Track(name: "Captions", height: 40, captions: Captions())
+        apply("Add Captions") { $0.tracks.append(track) }
+        selectCaptions(track.id)
+    }
+
+    func removeCaptions(_ track: UUID) {
+        selectedCaptions = nil
+        apply("Remove Captions") { $0.tracks.removeAll { $0.id == track } }
+        leaveSelectionTab()
+    }
+
+    /// Changes the selected captions' look or layout, as one undo step.
+    func changeCaptions(_ name: String, _ change: @escaping (inout Captions) -> Void) {
+        guard let track = selectedCaptions else { return }
+        apply(name) { project in
+            guard let index = project.tracks.firstIndex(where: { $0.id == track }), project.tracks[index].captions != nil else { return }
+            change(&project.tracks[index].captions!)
+        }
+    }
+
+    /// Fixes misheard words: `words`, from one file's transcript, become `text`. The same number of words keep their
+    /// times; otherwise the new words share the old ones' time by length. Undoable, and saved with the project.
+    func correctWords(_ words: [WordSource], to text: String) {
+        guard let asset = words.first?.asset, var transcript = transcripts[asset] else { return }
+        let indexes = Set(words.filter { $0.asset == asset }.map(\.index)).filter { transcript.words.indices.contains($0) }.sorted()
+        guard let first = indexes.first, let last = indexes.last else { return }
+        let tokens = text.split(whereSeparator: \.isWhitespace).map(String.init)
+        let old = indexes.map { transcript.words[$0] }
+        guard tokens != old.map(\.text) else { return }
+        var replacement: [Transcript.Word]
+        if tokens.count == old.count {
+            replacement = zip(old, tokens).map { word, token in Transcript.Word(text: token, start: word.start, end: word.end) }
+        } else {
+            let start = transcript.words[first].start
+            let span = transcript.words[last].end - start
+            let letters = Double(max(1, tokens.reduce(0) { $0 + $1.count }))
+            var offset = 0.0
+            replacement = tokens.map { token in
+                let share = span * Double(token.count) / letters
+                defer { offset += share }
+                return Transcript.Word(text: token, start: start + offset, end: start + offset + share)
+            }
+        }
+        for index in indexes.reversed() { transcript.words.remove(at: index) }
+        transcript.words.insert(contentsOf: replacement, at: first)
+        transcript.words.sort { $0.start < $1.start }
+        var updated = transcripts
+        updated[asset] = transcript
+        setTranscripts(updated, actionName: tokens.count == 1 && old.count == 1 ? "Fix Word" : "Fix Words")
+    }
+
+    private func setTranscripts(_ updated: [UUID: Transcript], actionName: String) {
+        let before = transcripts
+        transcripts = updated
+        undoManager?.registerUndo(withTarget: self) { store in
+            MainActor.assumeIsolated { store.setTranscripts(before, actionName: actionName) }
+        }
+        undoManager?.setActionName(actionName)
+        isSaving = true
+        transcriptsChanged?()
+        refreshTranscript(rebuilding: true)
     }
 
     // MARK: Zoom

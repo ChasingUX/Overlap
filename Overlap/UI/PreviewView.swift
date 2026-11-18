@@ -23,11 +23,12 @@ struct PreviewView: NSViewRepresentable {
         view.aspectRatio = aspectRatio
         view.setStage(stage)
         // While a Text or Canvas slider is dragged, the handles follow what the preview shows.
-        view.overlay.state = TransformOverlay.State(project: store.handlesPreview ?? store.project, selection: store.selection,
+        view.overlay.state = TransformOverlay.State(project: store.handlesPreview ?? store.shownProject, selection: store.selection,
                                                     handlesClip: store.handlesClip,
                                                     time: store.playback.currentTime, isCropping: store.isCropping,
                                                     editingTitle: store.editingTitleClip,
-                                                    aimedZoom: store.aimedClip != nil ? store.selectedZoom : nil)
+                                                    aimedZoom: store.aimedClip != nil ? store.selectedZoom : nil,
+                                                    selectedCaptions: store.selectedCaptions)
     }
 }
 

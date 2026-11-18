@@ -17,6 +17,8 @@ struct TimelineSnapshot {
     var filmstrips: [UUID: Filmstrip]
     var loopHighlight: LoopHighlight?
     var transcriptMarks: TranscriptMarks?
+    /// The captions track selected, whose captions all show selected.
+    var selectedCaptions: UUID?
 }
 
 /// While the Transcript tab shows: per clip, the stretches Remove Pauses and Fillers would take out and those the
@@ -86,7 +88,8 @@ struct TimelineRepresentable: NSViewRepresentable {
             thumbnails: store.thumbnails,
             filmstrips: store.filmstrips,
             loopHighlight: store.highlightedLoop,
-            transcriptMarks: store.transcriptMarks
+            transcriptMarks: store.transcriptMarks,
+            selectedCaptions: store.selectedCaptions
         )
     }
 }

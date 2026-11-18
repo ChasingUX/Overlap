@@ -1181,7 +1181,7 @@ enum DebugSnapshot {
                 }
             }
 
-            // OVERLAP_SNAPSHOT_TRANSCRIPT=<video>[,empty|,select|,cut|,remove] empties the timeline, adds the video at 0 s and
+            // OVERLAP_SNAPSHOT_TRANSCRIPT=<video>[,empty|,select|,cut|,remove|caption modes, below] empties the timeline, adds the video at 0 s and
             // transcribes it in the Transcript tab, reporting what it heard. ",select" then selects "first, open Settings
             // from the sidebar," in the panel; ",cut" also cuts it; ",remove" takes out the pauses and fillers instead.
             var transcriptReport: [String: Any] = [:]
@@ -1240,14 +1240,71 @@ enum DebugSnapshot {
                     store.removePausesAndFillers()
                     try? await Task.sleep(for: .milliseconds(500))
                 }
+                // ",captions", ",highlight", ",two" and ",fix" add captions: as they come, lighting the spoken word, on
+                // two lines, or after fixing "shared" to "Share" in the transcript. ",captioncut" adds them, then cuts
+                // as ",cut" does, to see them follow.
+                let captionModes = ["captions", "highlight", "two", "fix", "captioncut", "timeline", "clicks"]
+                if captionModes.contains(mode) {
+                    store.addCaptions()
+                    if mode == "highlight" { store.changeCaptions("Debug") { $0.highlightsSpokenWord = true } }
+                    if mode == "two" { store.changeCaptions("Debug") { $0.lines = 2 } }
+                    if mode == "fix", let index = store.timelineTranscript.items.firstIndex(where: {
+                        if case let .word(text, _, _, _) = $0 { return text == "shared" } else { return false }
+                    }), let source = store.timelineTranscript.sources[index] {
+                        store.correctWords([source], to: "Share")
+                    }
+                    if mode == "captioncut" {
+                        let items = store.timelineTranscript.items
+                        if let from = items.firstIndex(where: { if case let .word(text, _, _, _) = $0 { text == "first," } else { false } }),
+                           let to = items.firstIndex(where: { if case let .word(text, _, _, _) = $0 { text == "sidebar," } else { false } }) {
+                            store.selectTranscript(IndexSet(from...to))
+                            store.cutTranscriptSelection()
+                        }
+                    }
+                    try? await Task.sleep(for: .milliseconds(800))
+                    // ",clicks" moves the playhead to each caption, with captions selected and not, and checks a
+                    // click on it in the preview reaches it.
+                    if mode == "clicks", let overlay = window?.contentView.flatMap({ find(TransformOverlay.self, in: $0) }) {
+                        var hits: [[String: Any]] = []
+                        let phrases = store.shownProject.tracks.first { $0.captions != nil }?.clips ?? []
+                        let video = store.project.tracks.flatMap(\.clips).first { store.project.asset($0.assetID)?.kind == .video }
+                        for selected in ["captions", "none", "video"] {
+                            if selected == "captions", let first = phrases.first { store.select([first.id]) } else { store.select([]) }
+                            if selected == "video", let video {
+                                store.select([video.id])
+                                store.handlesClip = video.id
+                            }
+                            for phrase in phrases {
+                                store.playback.seek(to: phrase.start + Time(ticks: phrase.duration.ticks / 2))
+                                try? await Task.sleep(for: .milliseconds(250))
+                                var hit = overlay.debugCaptionHit()
+                                hit["selected"] = selected
+                                hits.append(hit)
+                            }
+                        }
+                        transcriptReport["clicks"] = hits
+                    }
+                    // ",timeline" drags captions and the video under them on the timeline.
+                    if mode == "timeline", let timeline = window?.contentView.flatMap({ find(TimelineView.self, in: $0) }) {
+                        transcriptReport["timeline"] = await timeline.debugCaptionDrags()
+                        try? await Task.sleep(for: .milliseconds(500))
+                    }
+                    let captions = store.shownProject.tracks.first { $0.captions != nil }
+                    transcriptReport["captions"] = captions?.clips.map {
+                        ["start": $0.start.seconds, "end": $0.end.seconds, "text": $0.title?.text ?? "", "y": $0.visual.y]
+                    } ?? []
+                    transcriptReport["captionsSelected"] = store.selectedCaptions != nil
+                    transcriptReport["tab"] = store.activeTab.title
+                    transcriptReport["undoName"] = document?.undoManager?.undoActionName ?? ""
+                }
                 if mode == "cut" || mode == "remove" {
                     transcriptReport["after"] = describe(store.timelineTranscript)
                     transcriptReport["clips"] = store.project.tracks.flatMap(\.clips).sorted { $0.start < $1.start }
                         .map { [$0.start.seconds, $0.duration.seconds, $0.sourceStart.seconds] }
                     transcriptReport["undoName"] = document?.undoManager?.undoActionName ?? ""
                 }
-                // On "first" for the highlight, unless a cut moved things.
-                store.playback.seek(to: Time(seconds: mode.isEmpty || mode == "select" ? 5.3 : 1))
+                // On "first" for the highlight, unless a cut moved things; captions on "settings".
+                store.playback.seek(to: Time(seconds: captionModes.contains(mode) ? 6.15 : mode.isEmpty || mode == "select" ? 5.3 : 1))
                 try? await Task.sleep(for: .milliseconds(500))
             }
 

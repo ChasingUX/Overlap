@@ -52,12 +52,13 @@ struct TranscriptPanel: View {
     }
 
     /// Progress while transcribing; otherwise Cut while words are selected, or Remove for the marked pauses and
-    /// fillers, and Transcribe for videos added since.
+    /// fillers, then Add Captions until there are some, and Transcribe for videos added since.
     @ViewBuilder
     private func footer(_ transcript: TimelineTranscript) -> some View {
         let newVideos = store.transcribing == nil ? store.untranscribedVideos.count : 0
         let removable = transcript.pauseCount + transcript.fillerCount
-        if store.transcribing != nil || !store.transcriptSelection.isEmpty || removable > 0 || newVideos > 0 {
+        let addsCaptions = store.transcribing == nil && !store.project.hasCaptions && !transcript.isEmpty
+        if store.transcribing != nil || !store.transcriptSelection.isEmpty || removable > 0 || newVideos > 0 || addsCaptions {
             VStack(spacing: 8) {
                 if let transcribing = store.transcribing {
                     TranscribingProgress(seconds: transcribing.seconds, duration: transcribing.duration,
@@ -82,6 +83,13 @@ struct TranscriptPanel: View {
                     }
                     .buttonStyle(BoxButtonStyle())
                     .help("Shortens each marked pause to a breath and takes out each filler word")
+                }
+                if addsCaptions {
+                    Button("Add captions") {
+                        store.addCaptions()
+                    }
+                    .buttonStyle(BoxButtonStyle())
+                    .help("Shows what's said on the canvas, a phrase at a time, following every edit")
                 }
                 if newVideos > 0 {
                     Button(newVideos == 1 ? "Transcribe 1 new video" : "Transcribe \(newVideos) new videos") {
@@ -204,7 +212,7 @@ private struct TranscriptTextView: NSViewRepresentable {
     }
 
     @MainActor
-    final class Coordinator: NSObject, NSTextViewDelegate {
+    final class Coordinator: NSObject, NSTextViewDelegate, NSTextFieldDelegate {
         var store: ProjectStore
         weak var textView: TranscriptNSTextView?
         var findRequests = 0
@@ -260,6 +268,63 @@ private struct TranscriptTextView: NSViewRepresentable {
             let item = NSMenuItem()
             item.tag = NSTextFinder.Action.showFindInterface.rawValue
             textView.performFindPanelAction(item)
+        }
+
+        /// The word being fixed, and the field it's retyped in.
+        private var fixing: (source: WordSource, field: NSTextField)?
+        private var cancelsFix = false
+
+        /// Double-clicking a word opens a small field over it to retype it, for words heard wrong.
+        func beginFixing(item index: Int) {
+            guard let textView, let shown, shown.items.indices.contains(index), shown.sources.indices.contains(index),
+                  let source = shown.sources[index], case let .word(text, _, _, _) = shown.items[index],
+                  let rect = textView.rect(for: itemRanges[index]) else { return }
+            endFixing()
+            let field = NSTextField(string: text)
+            field.font = NSFont.systemFont(ofSize: 13)
+            field.textColor = .white
+            field.isBezeled = false
+            field.drawsBackground = true
+            field.backgroundColor = NSColor(white: 0.07, alpha: 1)
+            field.focusRingType = .none
+            field.wantsLayer = true
+            field.layer?.borderColor = NSColor.controlAccentColor.cgColor
+            field.layer?.borderWidth = 1
+            field.layer?.cornerRadius = 4
+            field.delegate = self
+            let width = min(max(rect.width + 44, 96), textView.bounds.width - rect.minX - 6)
+            field.frame = CGRect(x: rect.minX - 4, y: rect.minY - 2, width: max(width, 60), height: rect.height + 4)
+            textView.setSelectedRange(NSRange(location: NSMaxRange(itemRanges[index]), length: 0))
+            textView.addSubview(field)
+            fixing = (source, field)
+            cancelsFix = false
+            textView.window?.makeFirstResponder(field)
+            field.currentEditor()?.selectAll(nil)
+        }
+
+        private func endFixing() {
+            guard let fixing else { return }
+            self.fixing = nil
+            fixing.field.removeFromSuperview()
+        }
+
+        func controlTextDidEndEditing(_ notification: Notification) {
+            guard let fixing, notification.object as? NSTextField === fixing.field else { return }
+            let text = fixing.field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            let cancelled = cancelsFix
+            endFixing()
+            textView?.window?.makeFirstResponder(textView)
+            if !cancelled, !text.isEmpty { store.correctWords([fixing.source], to: text) }
+        }
+
+        func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+            // Esc leaves the word as it was.
+            if selector == #selector(NSResponder.cancelOperation(_:)) {
+                cancelsFix = true
+                self.textView?.window?.makeFirstResponder(self.textView)
+                return true
+            }
+            return false
         }
 
         /// A click on a word or pause, without selecting, moves the playhead to it.
@@ -403,7 +468,13 @@ private final class TranscriptNSTextView: NSTextView {
     override func mouseDown(with event: NSEvent) {
         // AppKit follows the drag to select until the button comes up; a plain click selects nothing.
         super.mouseDown(with: event)
-        guard selectedRange().length == 0, let index = item(at: convert(event.locationInWindow, from: nil)) else { return }
+        let point = convert(event.locationInWindow, from: nil)
+        // A double-click retypes the word.
+        if event.clickCount == 2, let index = item(at: point) {
+            coordinator?.beginFixing(item: index)
+            return
+        }
+        guard selectedRange().length == 0, let index = item(at: point) else { return }
         coordinator?.clicked(item: index)
     }
 

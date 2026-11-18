@@ -3,13 +3,21 @@ import SwiftUI
 
 /// The Text tab. With a text clip selected: where it sits, from nine places, and how large; its font, weight and
 /// color; how it stands out from the picture; and how it comes in and goes out. The words are typed on the canvas.
-/// Its lines follow its place, lining up left on the left and right on the right. With no text selected, a button
-/// adds some at the playhead, ready to type.
+/// Its lines follow its place, lining up left on the left and right on the right. With captions selected, the same
+/// look for every caption, with how many lines each has and whether the spoken word lights up. With no text
+/// selected, a button adds some at the playhead, ready to type.
 struct TextPanel: View {
     let store: ProjectStore
 
     var body: some View {
-        if let clip = store.selectedClips.first, let title = clip.title {
+        if let selected = store.selectedCaptionsTrack {
+            ClipPanel(title: "Captions") {
+                TitleEditor(store: store, clip: store.representativeCaption ?? Clip(assetID: Clip.noAsset, start: .zero, sourceStart: .zero,
+                                                                                   duration: Clip.stillDuration),
+                            title: selected.captions.look, captions: selected.captions)
+                    .id(selected.id)
+            }
+        } else if let clip = store.selectedClips.first, let title = clip.title {
             ClipPanel(title: "Text") {
                 TitleEditor(store: store, clip: clip, title: title)
                     .id(clip.id)
@@ -21,11 +29,13 @@ struct TextPanel: View {
     }
 }
 
-/// Every setting of the selected text clip.
+/// Every setting of the selected text clip, or of the selected captions' look.
 private struct TitleEditor: View {
     let store: ProjectStore
     let clip: Clip
     let title: Title
+    /// Set for captions, which change together and don't animate.
+    var captions: Captions?
 
     /// Set while the second animation row shows though both ends are the same, as just after it's switched on.
     @State private var splitsAnimation = false
@@ -110,6 +120,37 @@ private struct TitleEditor: View {
             }
         }
 
+        if let captions {
+            captionSettings(captions)
+        } else {
+            animation
+        }
+    }
+
+    /// How many lines each caption has, and whether the word being said lights up; then taking them off.
+    @ViewBuilder
+    private func captionSettings(_ captions: Captions) -> some View {
+        PanelGroup(title: "Captions") {
+            OptionRow(options: [("One line", 1), ("Two lines", 2)], selected: captions.lines) { lines in
+                store.changeCaptions("Change Caption Lines") { $0.lines = lines }
+            }
+            PanelCard {
+                ToggleRow(title: "Highlight each word", isOn: captions.highlightsSpokenWord) { on in
+                    store.changeCaptions(on ? "Highlight Each Word" : "Stop Highlighting") { $0.highlightsSpokenWord = on }
+                }
+                .help("Lights each word as it's said, and dims the rest")
+            }
+        }
+        Button { store.deleteSelection() } label: {
+            Text("Remove captions")
+                .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(BoxButtonStyle())
+        .help("Takes the captions off; the transcript stays")
+    }
+
+    @ViewBuilder
+    private var animation: some View {
         PanelGroup(title: "Animate") {
             // One row sets both ends, until they're split.
             OptionRow(options: TitleAnimation.allCases.map { ($0.name, $0) }, selected: title.animationIn) { animation in

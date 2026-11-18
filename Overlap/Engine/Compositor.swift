@@ -89,7 +89,7 @@ final class FrameRenderer: @unchecked Sendable {
         let isTitle = if case .title = layer.source { true } else { false }
         let corners = isTitle ? 0 : frame.corners
         let shadow = isTitle ? 0 : frame.shadow
-        guard var image = source(of: layer, in: canvas, sourceFrame: sourceFrame) else { return nil }
+        guard var image = source(of: layer, at: time, in: canvas, sourceFrame: sourceFrame) else { return nil }
         if case .fill = layer.source {
             return visual.opacity < 1 ? faded(image, to: visual.opacity) : image
         }
@@ -152,14 +152,15 @@ final class FrameRenderer: @unchecked Sendable {
         return image
     }
 
-    private func source(of layer: RenderLayer, in canvas: CGRect, sourceFrame: (CMPersistentTrackID) -> CIImage?) -> CIImage? {
+    private func source(of layer: RenderLayer, at time: Double, in canvas: CGRect, sourceFrame: (CMPersistentTrackID) -> CIImage?) -> CIImage? {
         switch layer.source {
         case let .video(trackID, orientation):
             return sourceFrame(trackID)?.oriented(orientation)
         case let .image(url):
             return image(at: url, fitting: canvas.size)
         case let .title(title):
-            return titleImage(title, canvas: canvas.size)
+            // A caption lights the word being said.
+            return titleImage(title.lit(at: time - layer.start), canvas: canvas.size)
         case let .fill(fill):
             return self.fill(fill, in: canvas)
         }
@@ -349,6 +350,9 @@ final class FrameRenderer: @unchecked Sendable {
         if let cached = titles[key] { return cached }
         guard let drawn = TitleRenderer.image(for: title, canvas: canvas) else { return nil }
         let image = CIImage(cgImage: drawn)
+        // Captions draw a new image for each phrase, and each word lit in it; starting over now and then keeps the
+        // memory they take in hand.
+        if titles.count > 240 { titles.removeAll() }
         titles[key] = image
         return image
     }

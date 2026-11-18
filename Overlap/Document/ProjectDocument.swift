@@ -278,7 +278,9 @@ final class ProjectDocument: NSDocument {
             menuItem.state = store.prototypeFades ? .on : .off
         case #selector(toggleSnapping(_:)):
             menuItem.state = store.isSnappingEnabled ? .on : .off
-        case #selector(delete(_:)), #selector(deleteAndCloseGap(_:)), #selector(cutClips(_:)), #selector(copyClips(_:)):
+        case #selector(delete(_:)):
+            return !store.selection.isEmpty || store.selectedCaptions != nil
+        case #selector(deleteAndCloseGap(_:)), #selector(cutClips(_:)), #selector(copyClips(_:)):
             return !store.selection.isEmpty
         case #selector(pasteClips(_:)):
             return store.canPaste
