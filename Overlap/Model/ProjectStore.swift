@@ -273,7 +273,7 @@ final class ProjectStore {
     func rebuildPlayback() {
         rebuildTask?.cancel()
         let project = shownProject
-        let options = CompositionBuilder.Options(prototypeFades: prototypeFades, master: playback.masterGain)
+        let options = CompositionBuilder.Options(prototypeFades: prototypeFades, master: playback.masterGain, ducking: ducking)
         let layout = CompositionBuilder.layout(of: project)
         let mix = CompositionBuilder.mix(of: project, options: options)
         rebuildTask = Task {
@@ -1157,7 +1157,8 @@ final class ProjectStore {
         exportProgress = Exporter.Progress(stage: project.normalizesLoudness ? .measuring : .writing, fraction: 0)
         exportTask = Task {
             do {
-                let job = try await Exporter.job(for: shownProject, assets: { self.avAsset(for: $0) }, settings: settings, destination: destination)
+                let job = try await Exporter.job(for: shownProject, assets: { self.avAsset(for: $0) }, settings: settings,
+                                                 destination: destination, ducking: ducking)
                 try await Exporter.run(job) { progress in
                     Task { @MainActor in
                         // Only forward, so the bar never slips back if two reports arrive out of order.
@@ -1547,6 +1548,20 @@ final class ProjectStore {
     @ObservationIgnored private var transcribeTask: Task<Void, Never>?
     /// Set by the document, which saves transcripts with the project.
     @ObservationIgnored var transcriptsChanged: (() -> Void)?
+    /// Music kept low under speech, from the transcript, while the project asks for it.
+    private(set) var ducking: Ducking?
+
+    /// Whether ducking has anything to do: speech in the transcript to go by, and a sound file on the timeline to
+    /// lower. The switch shows only then; turned on, it stays on while either comes and goes.
+    var canDuckMusic: Bool {
+        !timelineTranscript.isEmpty && project.tracks.contains { $0.clips.contains(where: project.isDucked) }
+    }
+
+    /// Turns music down while anyone in the videos is talking, or stops.
+    func setDucksMusic(_ on: Bool) {
+        apply(on ? "Duck Music for Speech" : "Stop Ducking Music") { $0.ducksMusic = on }
+    }
+
     /// The stretches the words selected in the Transcript tab cover, lit on the timeline and taken out by Delete.
     private(set) var transcriptSelection: [TranscriptCut] = []
 
@@ -1577,7 +1592,8 @@ final class ProjectStore {
             transcriptSelection = []
         }
         shownProject = shown(project)
-        if rebuilding, changed, project.hasCaptions { rebuildPlayback() }
+        ducking = project.ducksMusic && !timelineTranscript.isEmpty ? Ducking(speech: timelineTranscript.speech) : nil
+        if rebuilding, changed, project.hasCaptions || project.ducksMusic { rebuildPlayback() }
     }
 
     /// Writes out what's said in every video on the timeline that hasn't been, one at a time, on this Mac.

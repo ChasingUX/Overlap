@@ -19,6 +19,8 @@ struct TimelineSnapshot {
     var transcriptMarks: TranscriptMarks?
     /// The captions track selected, whose captions all show selected.
     var selectedCaptions: UUID?
+    /// Music kept low under speech, which its waveform shows.
+    var ducking: Ducking?
 }
 
 /// While the Transcript tab shows: per clip, the stretches Remove Pauses and Fillers would take out and those the
@@ -89,7 +91,8 @@ struct TimelineRepresentable: NSViewRepresentable {
             filmstrips: store.filmstrips,
             loopHighlight: store.highlightedLoop,
             transcriptMarks: store.transcriptMarks,
-            selectedCaptions: store.selectedCaptions
+            selectedCaptions: store.selectedCaptions,
+            ducking: store.ducking
         )
     }
 }

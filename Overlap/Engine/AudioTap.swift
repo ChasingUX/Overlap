@@ -16,6 +16,8 @@ struct GainSegment: Hashable, Sendable {
     var crossfadeInCurve: Curve = .equalPower
     var crossfadeOut: Double = 0
     var crossfadeOutCurve: Curve = .equalPower
+    /// Music kept low under speech, timed on the timeline.
+    var duck: Ducking?
 
     init(clip: Clip, fadeIn: Fade, fadeOut: Fade) {
         start = clip.start.seconds
@@ -55,6 +57,9 @@ struct GainSegment: Hashable, Sendable {
         }
         if crossfadeOut > 0, remaining < crossfadeOut {
             gain *= crossfadeOutCurve.gain(at: remaining / crossfadeOut)
+        }
+        if let duck {
+            gain *= duck.gain(at: start + t)
         }
         return gain
     }

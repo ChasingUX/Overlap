@@ -100,6 +100,13 @@ struct MasterPanel: View {
                     store.setNormalizesLoudness($0)
                 }
                 .help("Exports at the level YouTube and streaming services play at: −14 LUFS, with peaks under −1 dBTP")
+                // Only once there's both speech in the transcript to go by and music to lower.
+                if store.canDuckMusic {
+                    ToggleRow(title: "Duck music for speech", isOn: store.project.ducksMusic) {
+                        store.setDucksMusic($0)
+                    }
+                    .help("Turns music down while anyone in the videos is talking, and back up in between")
+                }
             }
         }
     }

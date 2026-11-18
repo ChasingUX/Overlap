@@ -139,6 +139,8 @@ struct Project: Equatable, Sendable, Codable {
     var frame: PictureFrame?
     /// Whether exports are brought to `loudnessTarget`. Off leaves the mix as it plays.
     var normalizesLoudness = true
+    /// Turns music down while someone in the videos is talking, going by the transcript.
+    var ducksMusic = false
     /// How every zoom in the project moves, and how much it blurs while it does.
     var zoomAnimation = ZoomAnimation.smooth
     var motionBlur = MotionBlur.medium
@@ -257,6 +259,7 @@ extension Project {
         // Projects saved while the frame lived in a group of its own wrote one at zero to mean none.
         frame = try container.decodeIfPresent(PictureFrame.self, forKey: .frame).flatMap { $0 == PictureFrame() ? nil : $0 }
         normalizesLoudness = try container.decodeIfPresent(Bool.self, forKey: .normalizesLoudness) ?? true
+        ducksMusic = try container.decodeIfPresent(Bool.self, forKey: .ducksMusic) ?? false
         zoomAnimation = try container.decodeIfPresent(ZoomAnimation.self, forKey: .zoomAnimation) ?? .smooth
         motionBlur = try container.decodeIfPresent(MotionBlur.self, forKey: .motionBlur) ?? .medium
     }

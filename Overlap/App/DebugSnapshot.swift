@@ -1189,7 +1189,8 @@ enum DebugSnapshot {
                 let parts = value.split(separator: ",").map(String.init)
                 let mode = parts.count > 1 ? parts[1] : ""
                 let all = Set(store.project.tracks.flatMap(\.clips).map(\.id))
-                store.apply("Debug") { $0.removeClips(all) }
+                // ",duck" keeps the music already there, and turns on lowering it under the speech.
+                if mode != "duck" { store.apply("Debug") { $0.removeClips(all) } }
                 var added: Asset?
                 store.importFiles([URL(filePath: parts[0])], placement: (.zero, .new(at: store.project.tracks.count))) { added = $0 }
                 for _ in 0..<100 where added == nil { try? await Task.sleep(for: .milliseconds(100)) }
@@ -1239,6 +1240,15 @@ enum DebugSnapshot {
                 if mode == "remove" {
                     store.removePausesAndFillers()
                     try? await Task.sleep(for: .milliseconds(500))
+                }
+                if mode == "duck" {
+                    store.setDucksMusic(true)
+                    store.select([])
+                    store.showTab(.audio)
+                    try? await Task.sleep(for: .milliseconds(800))
+                    transcriptReport["ducking"] = store.ducking.map { ducking in
+                        stride(from: 0.0, through: 18, by: 1.5).map { ["t": $0, "gain": (ducking.gain(at: $0) * 100).rounded() / 100] }
+                    } ?? []
                 }
                 // ",captions", ",highlight", ",two" and ",fix" add captions: as they come, lighting the spoken word, on
                 // two lines, or after fixing "shared" to "Share" in the transcript. ",captioncut" adds them, then cuts

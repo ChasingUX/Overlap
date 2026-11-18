@@ -962,6 +962,8 @@ final class TimelineView: NSView {
             var gain = GainSegment(clip: clip, fadeIn: clip.playedFade(.start, crossfades: crossfades),
                                    fadeOut: clip.playedFade(.end, crossfades: crossfades))
             gain.addCrossfades(crossfades, of: clip.id)
+            // Music dips under speech, as it's heard.
+            if project.isDucked(clip) { gain.duck = snapshot.ducking }
             drawWaveform(waveform, clip: clip, gain: gain, clipRect: rect, area: waveformArea)
         }
         if hasSound {

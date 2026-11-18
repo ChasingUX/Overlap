@@ -33,7 +33,8 @@ for the one-time step macOS asks for. After that, Overlap updates itself.
 - **Captions:** added from the Transcript tab and made from the transcript, a phrase at a time. They follow every cut
   and fixed word, and stay off the timeline: click a caption on the canvas to style them all in the Text tab like any
   text, on one line or two, with the option of lighting each word as it's said.
-- **Sound:** per-clip volume, Isolate voice to take out background noise, and a master volume. Exports can be
+- **Sound:** Duck music for speech turns music down while anyone in the videos is talking, going by the transcript;
+  per-clip volume, Isolate voice to take out background noise, and a master volume. Exports can be
   brought to the loudness streaming services play at.
 - **Loops:** finds where a video repeats, or the best places it can loop, and trims a clip to a loop.
 - **Export:** MP4 or MOV in H.264 or HEVC, or sound alone as WAV, AIFF or M4A.

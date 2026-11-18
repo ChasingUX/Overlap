@@ -21,6 +21,8 @@ enum CompositionBuilder {
         /// Playback's live master volume. Without one, the project's master volume is built into the mix,
         /// as an export needs.
         var master: MasterGain?
+        /// Music kept low under speech, when the project asks for it and there's a transcript to go by.
+        var ducking: Ducking?
     }
 
     private struct AudioSlot: Hashable {
@@ -87,6 +89,7 @@ enum CompositionBuilder {
         var defaultCrossfadeCurve: Curve
         var builtInMaster: Double?
         var prototypeFades: Bool
+        var ducking: Ducking?
     }
 
     static func mix(of project: Project, options: Options) -> Mix {
@@ -98,7 +101,8 @@ enum CompositionBuilder {
             },
             defaultCrossfadeCurve: project.defaultCrossfadeCurve,
             builtInMaster: options.master == nil ? project.masterVolume : nil,
-            prototypeFades: options.prototypeFades
+            prototypeFades: options.prototypeFades,
+            ducking: options.ducking
         )
     }
 
@@ -196,6 +200,7 @@ enum CompositionBuilder {
                             )
                             segment.volume = isActive ? clip.volume * track.volume * (options.master == nil ? project.masterVolume : 1) : 0
                             segment.addCrossfades(crossfades, of: clip.id)
+                            if project.isDucked(clip) { segment.duck = options.ducking }
                             segments[audioSlot, default: []].append(segment)
                         }
                     }

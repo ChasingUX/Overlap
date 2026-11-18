@@ -36,11 +36,14 @@ enum Exporter {
 
     /// Builds what exporting the project takes, from the project as it is now.
     @MainActor
-    static func job(for project: Project, assets: (UUID) -> AVURLAsset?, settings: ExportSettings, destination: URL) async throws -> Job {
+    static func job(for project: Project, assets: (UUID) -> AVURLAsset?, settings: ExportSettings, destination: URL,
+                    ducking: Ducking? = nil) async throws -> Job {
         let target = project.normalizesLoudness ? Project.loudnessTarget : nil
+        // Loudness is measured on the mix as it's written, music dips and all.
+        let options = CompositionBuilder.Options(ducking: ducking)
         return Job(
-            measuring: target == nil ? nil : try await CompositionBuilder.build(project: project, assets: assets),
-            writing: try await CompositionBuilder.build(project: project, assets: assets),
+            measuring: target == nil ? nil : try await CompositionBuilder.build(project: project, assets: assets, options: options),
+            writing: try await CompositionBuilder.build(project: project, assets: assets, options: options),
             settings: settings,
             canvas: project.canvas ?? Project.defaultCanvas,
             frameRate: project.frameRate,
