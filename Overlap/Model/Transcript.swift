@@ -26,6 +26,18 @@ extension Transcript.Word {
     }
 }
 
+/// One place a search is said: the item it starts in, when, and the words around it, with whether there's more
+/// either side.
+struct TranscriptMatch: Equatable {
+    var item: Int
+    var time: Time
+    var before: String
+    var match: String
+    var after: String
+    var isCutBefore: Bool
+    var isCutAfter: Bool
+}
+
 /// A word's place in its file's transcript.
 struct WordSource: Hashable, Sendable {
     var asset: UUID
@@ -162,6 +174,47 @@ struct TimelineTranscript: Equatable {
             }
         }
         return result.sorted { $0.range.start < $1.range.start }
+    }
+
+    /// Every place `query` is said, ignoring case and accents, across words too: each with when it starts and a few
+    /// words either side to read it by.
+    func matches(of query: String, wordsBefore: Int = 3, wordsAfter: Int = 4) -> [TranscriptMatch] {
+        let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return [] }
+        let all = items
+        // The words joined by spaces, with where each starts in the text and which item it is.
+        var text = ""
+        var words: [(item: Int, start: Int, end: Int)] = []
+        for (index, item) in all.enumerated() {
+            guard case let .word(word, _, _, _) = item else { continue }
+            if !text.isEmpty { text += " " }
+            let start = (text as NSString).length
+            text += word
+            words.append((index, start, (text as NSString).length))
+        }
+        let string = text as NSString
+        var found: [TranscriptMatch] = []
+        var searchFrom = 0
+        while searchFrom < string.length {
+            let range = string.range(of: query, options: [.caseInsensitive, .diacriticInsensitive],
+                                     range: NSRange(location: searchFrom, length: string.length - searchFrom))
+            guard range.location != NSNotFound else { break }
+            searchFrom = NSMaxRange(range)
+            guard let first = words.lastIndex(where: { $0.start <= range.location }),
+                  let last = words.lastIndex(where: { $0.start < NSMaxRange(range) }) else { continue }
+            let from = max(0, first - wordsBefore)
+            let to = min(words.count - 1, last + wordsAfter)
+            found.append(TranscriptMatch(
+                item: words[first].item,
+                time: all[words[first].item].range.start,
+                before: string.substring(with: NSRange(location: words[from].start, length: range.location - words[from].start)),
+                match: string.substring(with: range),
+                after: string.substring(with: NSRange(location: NSMaxRange(range), length: words[to].end - NSMaxRange(range))),
+                isCutBefore: from > 0,
+                isCutAfter: to < words.count - 1
+            ))
+        }
+        return found
     }
 
     /// The item playing at `time`, if any.

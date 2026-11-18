@@ -67,7 +67,6 @@ enum TitleRenderer {
         var plain = title
         plain.spokenWords = nil
         plain.litWord = nil
-        plain.captionOf = nil
         let key = SizeKey(title: plain, width: canvas.width, height: canvas.height)
         if let known = sizes.withLock({ $0[key] }) { return known }
         let size = layout(for: plain, canvas: canvas).size

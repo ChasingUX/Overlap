@@ -188,3 +188,38 @@ struct TranscriptTests {
         #expect(store.timelineTranscript.pauseCount == 2)
     }
 }
+
+/// Searching the transcript: every place it's said, across words, with a few words either side.
+struct TranscriptSearchTests {
+    let video = Asset(id: UUID(), fileName: "v.mov", displayName: "Walkthrough.mov", kind: .video, duration: Time(seconds: 30),
+                      hasAudio: true, pixelWidth: 1920, pixelHeight: 1080, frameRate: 30)
+
+    var transcript: TimelineTranscript {
+        let words = "Open Settings from the sidebar, then save your settings before you go".split(separator: " ")
+            .enumerated().map { Transcript.Word(text: String($1), start: Double($0), end: Double($0) + 0.8) }
+        var project = Project()
+        project.assets = [video]
+        project.tracks[0].clips = [Clip(assetID: video.id, start: .zero, sourceStart: .zero, duration: Time(seconds: 20))]
+        return project.timelineTranscript([video.id: Transcript(words: words)])
+    }
+
+    @Test func findsEveryPlaceIgnoringCase() throws {
+        let matches = transcript.matches(of: "settings")
+        #expect(matches.map(\.time) == [Time(seconds: 1), Time(seconds: 8)])
+        let first = try #require(matches.first)
+        #expect(first.before == "Open ")
+        #expect(first.match == "Settings")
+        #expect(first.after == " from the sidebar, then")
+        #expect(!first.isCutBefore)
+        #expect(first.isCutAfter)
+        #expect(matches.last?.before == "then save your ")
+        #expect(matches.last?.isCutBefore == true)
+    }
+
+    @Test func findsWordsTogetherAndPartsOfWords() {
+        #expect(transcript.matches(of: "the side").map(\.time) == [Time(seconds: 3)])
+        #expect(transcript.matches(of: "SIDE").count == 1)
+        #expect(transcript.matches(of: "  ").isEmpty)
+        #expect(transcript.matches(of: "jarvis").isEmpty)
+    }
+}

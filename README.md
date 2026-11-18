@@ -29,10 +29,10 @@ for the one-time step macOS asks for. After that, Overlap updates itself.
 - **Transcript:** once a video is on the timeline, the Transcript tab writes out what's said, on the Mac, with
   Apple's speech recognition. The word being heard is lit as it plays; click a word to go to it, or select words
   and press Delete to cut them from the video. Pauses and filler words are marked, there and on the timeline, for
-  one button to take out. Double-click a word to fix it.
-- **Captions:** made from the transcript, a phrase at a time, on a track of their own. They follow every cut and fixed
-  word, and are styled together in the Text tab like any text, on one line or two, with the option of lighting each
-  word as it's said.
+  one button to take out. Double-click a word to fix it, or search (⌘F) for the lines that say something.
+- **Captions:** added from the Transcript tab and made from the transcript, a phrase at a time. They follow every cut
+  and fixed word, and stay off the timeline: click a caption on the canvas to style them all in the Text tab like any
+  text, on one line or two, with the option of lighting each word as it's said.
 - **Sound:** per-clip volume, Isolate voice to take out background noise, and a master volume. Exports can be
   brought to the loudness streaming services play at.
 - **Loops:** finds where a video repeats, or the best places it can loop, and trims a clip to a loop.

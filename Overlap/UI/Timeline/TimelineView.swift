@@ -23,9 +23,6 @@ final class TimelineView: NSView {
         /// picture clip, with a gap below it before the clip.
         static let zoomLane: CGFloat = 34
         static let zoomTrack: CGFloat = 28
-        /// The lane of captions above a spoken clip, once there are captions: each caption over the words it shows.
-        static let captionLane: CGFloat = 24
-        static let captionChip: CGFloat = 19
         /// The track's and its bars' corners: a bar fills the track top to bottom, so they round alike.
         static let zoomRadius: CGFloat = 9
         /// Corners of clips, crossfade boxes, and the small tags over clips.
@@ -112,28 +109,10 @@ final class TimelineView: NSView {
         didSet { snapshotDidChange(from: oldValue) }
     }
 
-    /// Each spoken clip's captions, in its source's seconds, so they sit over its words wherever the clip is drawn:
-    /// in place, trimmed, or floating in a drag.
-    private var captionChips: [UUID: [(from: Double, to: Double, caption: Clip)]] = [:]
-
-    private func findCaptionChips() {
-        var chips: [UUID: [(from: Double, to: Double, caption: Clip)]] = [:]
-        let project = snapshot.project
-        for track in project.tracks where track.captions != nil {
-            for caption in track.clips {
-                guard let of = caption.title?.captionOf, let clip = project.clip(of) else { continue }
-                func source(_ time: Time) -> Double { clip.sourceStart.seconds + (time - clip.start).seconds * clip.speed }
-                chips[of, default: []].append((source(caption.start), source(caption.end), caption))
-            }
-        }
-        captionChips = chips
-    }
-
     init(store: ProjectStore, snapshot: TimelineSnapshot) {
         self.store = store
         self.snapshot = snapshot
         super.init(frame: .zero)
-        findCaptionChips()
         wantsLayer = true
         layerContentsRedrawPolicy = .onSetNeedsDisplay
         layerContentsPlacement = .topLeft
@@ -178,52 +157,9 @@ final class TimelineView: NSView {
 
     private func rowHeight(_ track: Track) -> CGFloat {
         CGFloat(track.height * Layout.trackScale) + (hasZoomLane(track) ? Layout.zoomLane : 0)
-            + (hasCaptionLane(track) ? Layout.captionLane : 0)
     }
 
-    /// Whether a track shows a lane of captions above its clips: while one of its clips has captions.
-    private func hasCaptionLane(_ track: Track) -> Bool {
-        track.clips.contains { captionChips[$0.id] != nil }
-    }
-
-    /// The caption lane's height in a row holding `clip`, as for the zoom lane.
-    private func captionLaneHeight(in row: CGRect, of clip: Clip) -> CGFloat {
-        guard let location = project.location(ofClip: clip.id) else { return 0 }
-        let track = project.tracks[location.track]
-        guard hasCaptionLane(track), row.height >= rowHeight(track) - 0.5 else { return 0 }
-        return Layout.captionLane
-    }
-
-    /// Where a clip's captions sit, with the top of the lane they're in: over the part of the clip that says them.
-    private func captionChips(of clip: Clip, laneTop: CGFloat) -> [(caption: Clip, rect: CGRect)] {
-        let clipRange = x(for: clip.start)...x(for: clip.end)
-        return (captionChips[clip.id] ?? []).compactMap { chip in
-            let left = max(clipRange.lowerBound, x(for: Time(seconds: clip.timelineSeconds(atSource: chip.from))))
-            let right = min(clipRange.upperBound, x(for: Time(seconds: clip.timelineSeconds(atSource: chip.to))))
-            guard right - left >= 2 else { return nil }
-            return (chip.caption, CGRect(x: left, y: laneTop + (Layout.captionLane - Layout.captionChip) / 2,
-                                         width: right - left - 2, height: Layout.captionChip))
-        }
-    }
-
-    private func captionChips(of clip: Clip, in row: CGRect) -> [(caption: Clip, rect: CGRect)] {
-        guard captionLaneHeight(in: row, of: clip) > 0 else { return [] }
-        return captionChips(of: clip, laneTop: row.minY + zoomLaneHeight(in: row, of: clip) + Layout.clipInset / 2)
-    }
-
-    /// The caption under a point, in a caption lane.
-    private func captionChip(at point: CGPoint) -> Clip? {
-        for row in rows where row.rect.minY <= point.y && point.y < row.rect.maxY {
-            for clip in project.tracks[row.track].clips {
-                if let chip = captionChips(of: clip, in: row.rect).first(where: { $0.rect.insetBy(dx: 0, dy: -2).contains(point) }) {
-                    return chip.caption
-                }
-            }
-        }
-        return nil
-    }
-
-    /// The tracks with rows, top down. A captions track has none: its captions show over their clips.
+    /// The tracks with rows, top down. A captions track has none: captions are found and styled on the canvas.
     private var shownOrder: [Int] {
         project.tracks.indices.reversed().filter { project.tracks[$0].captions == nil }
     }
@@ -400,7 +336,7 @@ final class TimelineView: NSView {
     }
 
     private func clipRect(_ clip: Clip, in row: CGRect) -> CGRect {
-        let lane = zoomLaneHeight(in: row, of: clip) + captionLaneHeight(in: row, of: clip)
+        let lane = zoomLaneHeight(in: row, of: clip)
         return CGRect(
             x: x(for: clip.start),
             y: row.minY + lane + Layout.clipInset,
@@ -434,9 +370,7 @@ final class TimelineView: NSView {
 
     /// A clip edge under the pointer, on a track that isn't locked. Narrow clips keep most of their middle for moving.
     private func trimEdge(at point: CGPoint) -> (clip: Clip, edge: Project.ClipEdge)? {
-        // Captions take their timing from the speech, so they don't trim.
-        for row in rows where row.rect.minY <= point.y && point.y < row.rect.maxY && !project.tracks[row.track].isLocked
-            && project.tracks[row.track].captions == nil {
+        for row in rows where row.rect.minY <= point.y && point.y < row.rect.maxY && !project.tracks[row.track].isLocked {
             for clip in project.tracks[row.track].clips {
                 let rect = clipRect(clip, in: row.rect)
                 let zone = min(6, rect.width / 4)
@@ -619,7 +553,6 @@ final class TimelineView: NSView {
         scrollX = max(0, scrollX)
         scrollY = scrollY.clamped(to: 0...maxScrollY)
         if old.project != snapshot.project {
-            findCaptionChips()
             updateLanes()
         }
         needsDisplay = true
@@ -680,11 +613,9 @@ final class TimelineView: NSView {
             // A clip with zooms carries its zoom track and bars above it as it floats.
             let clip = dragPreview.clip
             let lane = clip.zoomsWithinSource().isEmpty ? 0 : Layout.zoomLane
-            // And its captions, over the words they show.
-            let captionLane = captionChips[dragPreview.movingClip ?? clip.id] != nil ? Layout.captionLane : 0
-            let floating = CGRect(x: 0, y: dragPreview.top, width: bounds.width, height: defaultRowHeight + lane + captionLane)
+            let floating = CGRect(x: 0, y: dragPreview.top, width: bounds.width, height: defaultRowHeight + lane)
             let drag = dragCrossfades
-            let box = CGRect(x: x(for: clip.start), y: floating.minY + lane + captionLane + Layout.clipInset,
+            let box = CGRect(x: x(for: clip.start), y: floating.minY + lane + Layout.clipInset,
                              width: max(2, CGFloat(clip.duration.seconds) * pixelsPerSecond),
                              height: defaultRowHeight - Layout.clipInset * 2)
             if lane > 0 {
@@ -692,13 +623,6 @@ final class TimelineView: NSView {
                 drawZoomTrack(in: track)
                 for (zoom, rect) in zoomBars(of: clip, inTrack: track) {
                     drawZoomBar(zoom, in: rect, selected: false)
-                }
-            }
-            if captionLane > 0, let moving = dragPreview.movingClip {
-                var lifted = clip
-                lifted.id = moving
-                for (caption, rect) in captionChips(of: lifted, laneTop: floating.minY + lane + Layout.clipInset / 2) {
-                    drawCaptionChip(caption, in: rect, selected: snapshot.selectedCaptions != nil)
                 }
             }
             drawClip(clip, in: box, selected: true, label: dragPreview.label, lifted: true,
@@ -757,10 +681,7 @@ final class TimelineView: NSView {
         let clips = project.tracks[track].clips.filter { $0.id != moving }.sorted { $0.start < $1.start }
 
         for clip in clips {
-            // Captions select together.
-            let selected = snapshot.selection.contains(clip.id)
-                || (project.tracks[track].captions != nil && snapshot.selectedCaptions == project.tracks[track].id)
-            drawClip(clip, in: clipRect(clip, in: row), selected: selected, crossfades: gains)
+            drawClip(clip, in: clipRect(clip, in: row), selected: snapshot.selection.contains(clip.id), crossfades: gains)
             if let highlight = snapshot.loopHighlight, highlight.clip == clip.id {
                 drawLoopHighlight(highlight, on: clip, in: clipRect(clip, in: row))
             }
@@ -785,12 +706,6 @@ final class TimelineView: NSView {
             for (zoom, rect) in zoomBars(of: clip, in: row) {
                 let selected = snapshot.selectedZoom == ProjectStore.ZoomSelection(clip: clip.id, zoom: zoom.id)
                 drawZoomBar(zoom, in: rect, selected: selected)
-            }
-        }
-        // Captions over the clips that say them, all selected together.
-        for clip in clips {
-            for (caption, rect) in captionChips(of: clip, in: row) {
-                drawCaptionChip(caption, in: rect, selected: snapshot.selectedCaptions != nil)
             }
         }
         NSGraphicsContext.restoreGraphicsState()
@@ -845,29 +760,6 @@ final class TimelineView: NSView {
             CGRect(x: edge, y: rect.minY, width: 2, height: rect.height).fill()
         }
         NSGraphicsContext.restoreGraphicsState()
-    }
-
-    /// A caption in its lane: a small gray box with its words, outlined white while the captions are selected.
-    private func drawCaptionChip(_ caption: Clip, in rect: CGRect, selected: Bool) {
-        guard rect.maxX >= 0, rect.minX <= bounds.width else { return }
-        let path = NSBezierPath(roundedRect: rect, xRadius: Layout.tagRadius, yRadius: Layout.tagRadius)
-        Theme.captionChip.setFill()
-        path.fill()
-        let stroke = NSBezierPath(roundedRect: rect.insetBy(dx: 0.5, dy: 0.5), xRadius: Layout.tagRadius - 0.5, yRadius: Layout.tagRadius - 0.5)
-        stroke.lineWidth = selected ? 1.5 : 1
-        (selected ? Theme.clipSelectedStroke : Theme.clipStroke).setStroke()
-        stroke.stroke()
-        guard rect.width > 16, let text = caption.title?.text.replacingOccurrences(of: "\n", with: " ") else { return }
-        let style = NSMutableParagraphStyle()
-        style.lineBreakMode = .byTruncatingTail
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 10.5),
-            .foregroundColor: NSColor.white.withAlphaComponent(0.88),
-            .paragraphStyle: style,
-        ]
-        let line = NSFont.systemFont(ofSize: 10.5).boundingRectForFont.height
-        (text as NSString).draw(with: CGRect(x: rect.minX + 5, y: rect.midY - line / 2 + 1, width: rect.width - 10, height: line),
-                                options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine], attributes: attributes)
     }
 
     /// A stretch of a clip the Transcript tab points at, given in its source's seconds: a darkened gap with dashed
@@ -1044,11 +936,9 @@ final class TimelineView: NSView {
         let filmstrip = snapshot.filmstrips[clip.assetID]
         let hasSound = project.playsSound(clip)
         let canvas = project.canvas ?? Project.defaultCanvas
-        // Text shows as a frame of the canvas with the text in place; media shows its own frames. A caption shows
-        // just its words, as there are many and they're short.
-        let isCaption = clip.title?.spokenWords != nil
-        let thumbnail = isCaption ? nil : clip.title != nil ? titleFrame(for: clip, canvas: canvas, height: rect.height) : snapshot.thumbnails[clip.assetID]
-        let hasFrames = !isCaption && project.showsPicture(clip) && (filmstrip != nil || thumbnail != nil)
+        // Text shows as a frame of the canvas with the text in place; media shows its own frames.
+        let thumbnail = clip.title != nil ? titleFrame(for: clip, canvas: canvas, height: rect.height) : snapshot.thumbnails[clip.assetID]
+        let hasFrames = project.showsPicture(clip) && (filmstrip != nil || thumbnail != nil)
         if hasFrames {
             let frames = hasSound
                 ? CGRect(x: rect.minX, y: rect.minY, width: rect.width, height: rect.height * 0.6)
@@ -1095,7 +985,7 @@ final class TimelineView: NSView {
         }
         stroke.stroke()
         var name = label ?? asset?.displayName
-            ?? clip.title.map { isCaption ? $0.text.replacingOccurrences(of: "\n", with: " ") : $0.text.split(separator: "\n").first.map(String.init) ?? "Text" }
+            ?? clip.title.map { $0.text.split(separator: "\n").first.map(String.init) ?? "Text" }
             ?? (clip.fill != nil ? "Background" : "Missing media")
         if clip.speed != 1 {
             name += "  \(clip.speed.formatted(.number.precision(.fractionLength(0...2))))×"
@@ -1309,19 +1199,6 @@ final class TimelineView: NSView {
             return
         }
 
-        // A caption selects its captions and moves the playhead, as a click on a clip does; a double-click types into
-        // it on the canvas, to fix its words. Their timing is the transcript's, so they don't trim or drag.
-        if let caption = captionChip(at: point) {
-            store.select([caption.id])
-            if event.clickCount == 2 {
-                editCaption(caption)
-            } else {
-                store.playback.seek(to: time(atX: point.x))
-            }
-            interaction = .none
-            return
-        }
-
         // Fade handles come first: they sit on a clip's top edge, inside its trim zones.
         if let (clip, edge) = fadeHandleHit(at: point) {
             if !snapshot.selection.contains(clip.id) { store.select([clip.id]) }
@@ -1531,18 +1408,6 @@ final class TimelineView: NSView {
         guard let row = rows.first(where: { $0.rect.minY <= point.y && point.y < $0.rect.maxY }) else { return nil }
         let track = project.tracks[row.track]
         let menu = NSMenu()
-        // A caption offers fixing its words and taking the captions off.
-        if let caption = captionChip(at: point), let captions = project.captionsTrack(ofClip: caption.id) {
-            store.select([caption.id])
-            let edit = menuItem("Edit Caption", #selector(contextEditCaption(_:)))
-            edit.representedObject = caption.id
-            menu.addItem(edit)
-            let remove = menuItem("Remove Captions", #selector(contextRemoveCaptions(_:)))
-            remove.representedObject = captions
-            menu.addItem(remove)
-            return menu
-        }
-
         if let crossfade = crossfade(at: point) {
             store.selectTransition(crossfade.incoming.id)
             let header = NSMenuItem(title: "Crossfade Curve", action: nil, keyEquivalent: "")
@@ -1642,21 +1507,6 @@ final class TimelineView: NSView {
 
     @objc private func contextSplit() { store.splitAtPlayhead() }
 
-    @objc private func contextEditCaption(_ item: NSMenuItem) {
-        guard let id = item.representedObject as? UUID, let caption = project.clip(id) else { return }
-        editCaption(caption)
-    }
-
-    @objc private func contextRemoveCaptions(_ item: NSMenuItem) {
-        guard let id = item.representedObject as? UUID else { return }
-        store.removeCaptions(id)
-    }
-
-    /// Shows the caption in the preview and types into it there, as double-clicking it on the canvas does.
-    private func editCaption(_ caption: Clip) {
-        store.playback.seek(to: caption.start + Time(ticks: caption.duration.ticks / 2))
-        store.beginEditingTitle(caption.id)
-    }
     @objc private func contextAddZoom(_ item: NSMenuItem) {
         guard let request = item.representedObject as? ZoomRequest else { return }
         store.addZoom(to: request.clip, at: request.time)
@@ -2044,44 +1894,13 @@ extension TimelineView {
                 "selectionIsCopy": store.selection.count == 1 && store.selection.first != clip.id]
     }
 
-    /// For the debug self-check: drags a caption, presses just past its end, opens its menu, and drags the video under
-    /// it, saying how many captions the timeline shows right after each and what undo would undo.
+    /// For the debug self-check: the rows the timeline shows, and the captions following the video as it's dragged:
+    /// they don't show on the timeline, but play over the video.
     func debugCaptionDrags() async -> [String: Any] {
-        guard let row = rows.first(where: { row in project.tracks[row.track].clips.contains { !captionChips(of: $0, in: row.rect).isEmpty } }),
-              let spoken = project.tracks[row.track].clips.first(where: { !captionChips(of: $0, in: row.rect).isEmpty }),
-              let (caption, chipRect) = captionChips(of: spoken, in: row.rect).first,
-              let captionsTrack = project.captionsTrack(ofClip: caption.id) else { return ["error": "no captions"] }
-        func shown() -> Int { project.tracks.first { $0.id == captionsTrack }?.clips.count ?? -1 }
-        func drawn() -> Int { rows.flatMap { row in project.tracks[row.track].clips.flatMap { captionChips(of: $0, in: row.rect) } }.count }
-        let before = shown()
-        let undoBefore = store.undoManager?.undoActionName ?? ""
-        var report: [String: Any] = ["before": before, "drawnBefore": drawn(), "rows": rows.count, "tracks": project.tracks.count,
-                                     "laneAboveClip": chipRect.maxY <= clipRect(spoken, in: row.rect).minY]
-
-        let rect = chipRect
-        let start = CGPoint(x: rect.midX, y: rect.midY)
-        send(.leftMouseDown, at: start)
-        send(.leftMouseDragged, at: CGPoint(x: start.x + 40, y: start.y))
-        send(.leftMouseDragged, at: CGPoint(x: start.x + 90, y: start.y))
-        send(.leftMouseUp, at: CGPoint(x: start.x + 90, y: start.y))
-        report["afterCaptionDrag"] = shown()
-        report["captionsSelected"] = store.selectedCaptions == captionsTrack
-        try? await Task.sleep(for: .milliseconds(300))
-        report["afterCaptionDragLater"] = shown()
-
-        // Just past its end, where a clip's edge would trim.
-        send(.leftMouseDown, at: CGPoint(x: rect.maxX + 3, y: rect.midY))
-        if case .trimming = interaction { report["edgeTrims"] = true } else { report["edgeTrims"] = false }
-        send(.leftMouseDragged, at: CGPoint(x: rect.maxX + 60, y: rect.midY))
-        send(.leftMouseUp, at: CGPoint(x: rect.maxX + 60, y: rect.midY))
-        report["undoUnchanged"] = (store.undoManager?.undoActionName ?? "") == undoBefore
-
-        if let window, let event = NSEvent.mouseEvent(with: .rightMouseDown, location: convert(start, to: nil), modifierFlags: [], timestamp: 0,
-                                                      windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1) {
-            report["menu"] = menu(for: event)?.items.map { $0.isSeparatorItem ? "—" : $0.title } ?? []
-        }
-
-        // The video under the captions, dragged along: the captions stay on screen through the drop.
+        guard let captionsTrack = project.tracks.first(where: { $0.captions != nil })?.id else { return ["error": "no captions"] }
+        func captions() -> Int { project.tracks.first { $0.id == captionsTrack }?.clips.count ?? -1 }
+        var report: [String: Any] = ["rows": rows.count, "tracks": project.tracks.count, "captions": captions(),
+                                     "rowHeights": rows.map { Double($0.rect.height) }, "defaultRowHeight": Double(defaultRowHeight)]
         if let videoRow = rows.first(where: { project.tracks[$0.track].clips.contains { project.asset($0.assetID)?.kind == .video } }),
            let video = project.tracks[videoRow.track].clips.first {
             let videoRect = clipRect(video, in: videoRow.rect)
@@ -2089,10 +1908,8 @@ extension TimelineView {
             send(.leftMouseDown, at: from)
             send(.leftMouseDragged, at: CGPoint(x: from.x + 20, y: from.y))
             send(.leftMouseDragged, at: CGPoint(x: from.x + 50, y: from.y))
-            report["duringVideoDrag"] = shown()
             send(.leftMouseUp, at: CGPoint(x: from.x + 50, y: from.y))
-            report["afterVideoDrop"] = shown()
-            report["drawnAfterVideoDrop"] = drawn()
+            report["captionsAfterVideoDrop"] = captions()
             report["videoMovedTo"] = store.project.clip(video.id)?.start.seconds ?? -1
             report["firstCaptionAfter"] = project.tracks.first { $0.id == captionsTrack }?.clips.first?.start.seconds ?? -1
         }

@@ -40,12 +40,11 @@ extension Captions {
     }
 }
 
-/// One caption: its text, when it shows, its words, and the clip they're said in.
+/// One caption: its text, when it shows, and its words.
 struct CaptionPhrase: Equatable {
     var text: String
     var range: TimeRange
     var words: [SpokenWord]
-    var clip: UUID?
 }
 
 extension TimelineTranscript {
@@ -97,8 +96,7 @@ extension TimelineTranscript {
                     text.replaceSubrange(split...split, with: "\n")
                 }
             }
-            phrases.append(CaptionPhrase(text: text, range: TimeRange(from: first.range.start, to: last.range.end), words: words,
-                                         clip: currentClip))
+            phrases.append(CaptionPhrase(text: text, range: TimeRange(from: first.range.start, to: last.range.end), words: words))
             current = []
         }
 
@@ -167,7 +165,6 @@ extension Project {
                 title.text = phrase.text
                 title.spokenWords = phrase.words
                 title.highlightsSpokenWord = captions.highlightsSpokenWord
-                title.captionOf = phrase.clip
                 title.alignment = title.anchor?.alignment ?? .center
                 var clip = Clip(assetID: Clip.noAsset, start: phrase.range.start, sourceStart: .zero, duration: phrase.range.duration)
                 clip.id = Self.captionID(track: track, number: number)

@@ -523,7 +523,7 @@ extension Project {
     /// Keeps the timeline tidy: tracks without clips are removed. New tracks appear when clips are dropped above or below the others.
     mutating func normalizeTracks() {
         // A captions track has no clips of its own, and stays until its captions are removed. It draws above the rest,
-        // as the timeline shows its captions over the clips they come from rather than on a row of their own.
+        // and has no row on the timeline: captions are found and styled on the canvas.
         tracks.removeAll { $0.clips.isEmpty && $0.captions == nil }
         tracks = tracks.filter { $0.captions == nil } + tracks.filter { $0.captions != nil }
     }

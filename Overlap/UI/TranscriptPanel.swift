@@ -3,40 +3,117 @@ import SwiftUI
 
 /// The Transcript tab: what's said in the videos on the timeline, following the playhead. Clicking a word moves the
 /// playhead to it, and selecting words and pressing Delete cuts them from the video. Pauses and filler words are
-/// marked, here and on the timeline, for one button to take out.
+/// marked, here and on the timeline, for one button to take out. Searching turns the top row into a field and lists
+/// the lines that match, each a click from its moment.
 struct TranscriptPanel: View {
     let store: ProjectStore
-    @State private var findRequests = 0
+    @State private var isSearching = Self.debugSearch != nil
+    @State private var query = Self.debugSearch ?? ""
+
+    /// For checks: OVERLAP_SNAPSHOT_SEARCH=<words> opens the tab searching for them.
+    private static let debugSearch: String? = {
+        #if DEBUG
+        ProcessInfo.processInfo.environment["OVERLAP_SNAPSHOT_SEARCH"]
+        #else
+        nil
+        #endif
+    }()
+    /// The match last gone to, by its place in the list.
+    @State private var current: Int?
+    @FocusState private var isFieldFocused: Bool
 
     var body: some View {
         let transcript = store.timelineTranscript
         if transcript.isEmpty, store.transcribing == nil {
             emptyState
         } else {
+            let hasQuery = isSearching && !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            let matches = hasQuery ? transcript.matches(of: query) : []
             VStack(spacing: 0) {
                 // The top row other panels' first labels line up with.
-                HStack {
-                    PanelLabel("Transcript")
-                    Spacer()
-                    Button {
-                        findRequests += 1
-                    } label: {
-                        Image(systemName: "magnifyingglass")
-                            .font(.system(size: 12, weight: .medium))
-                    }
-                    .buttonStyle(IconButtonStyle())
-                    .help("Find in the transcript")
-                    .accessibilityLabel("Find in the transcript")
+                topRow(matches)
+                    .frame(height: PanelMetrics.topRowHeight)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, PanelMetrics.topRowInset)
+
+                if hasQuery {
+                    SearchResults(matches: matches, current: current) { go(to: $0, in: matches) }
+                } else {
+                    TranscriptTextView(store: store, transcript: transcript)
+                    footer(transcript)
                 }
-                .frame(height: PanelMetrics.topRowHeight)
-                .padding(.horizontal, 14)
-                .padding(.vertical, PanelMetrics.topRowInset)
+            }
+            .onChange(of: query) { current = nil }
+        }
+    }
 
-                TranscriptTextView(store: store, transcript: transcript, findRequests: findRequests)
-
-                footer(transcript)
+    /// "Transcript" and the search button, or, while searching, the field in their place.
+    @ViewBuilder
+    private func topRow(_ matches: [TranscriptMatch]) -> some View {
+        if isSearching {
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+                TextField("Search the transcript", text: $query)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 12))
+                    .focused($isFieldFocused)
+                    // Return and the arrows step through the matches; Esc closes.
+                    .onSubmit { step(1, in: matches) }
+                    .onKeyPress(.downArrow) { step(1, in: matches); return .handled }
+                    .onKeyPress(.upArrow) { step(-1, in: matches); return .handled }
+                    .onKeyPress(.escape) { closeSearch(); return .handled }
+                    .onAppear { DispatchQueue.main.async { isFieldFocused = true } }
+                Button {
+                    closeSearch()
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Close search")
+                .accessibilityLabel("Close search")
+            }
+            .padding(.horizontal, 8)
+            .frame(maxHeight: .infinity)
+            .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(Color(nsColor: Theme.controlBox)))
+        } else {
+            HStack {
+                PanelLabel("Transcript")
+                Spacer()
+                Button {
+                    isSearching = true
+                } label: {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 12, weight: .medium))
+                }
+                .buttonStyle(IconButtonStyle())
+                .keyboardShortcut("f", modifiers: .command)
+                .help("Search the transcript (⌘F)")
+                .accessibilityLabel("Search the transcript")
             }
         }
+    }
+
+    private func go(to index: Int, in matches: [TranscriptMatch]) {
+        guard matches.indices.contains(index) else { return }
+        current = index
+        store.playback.seek(to: matches[index].time)
+    }
+
+    private func step(_ delta: Int, in matches: [TranscriptMatch]) {
+        guard !matches.isEmpty else { return }
+        let next = current.map { ($0 + delta + matches.count) % matches.count } ?? (delta > 0 ? 0 : matches.count - 1)
+        go(to: next, in: matches)
+    }
+
+    /// Back to the transcript, at the moment last gone to.
+    private func closeSearch() {
+        isSearching = false
+        query = ""
+        current = nil
     }
 
     @ViewBuilder
@@ -52,13 +129,15 @@ struct TranscriptPanel: View {
     }
 
     /// Progress while transcribing; otherwise Cut while words are selected, or Remove for the marked pauses and
-    /// fillers, then Add Captions until there are some, and Transcribe for videos added since.
+    /// fillers, then Add or Remove Captions, and Transcribe for videos added since. Captions don't show on the
+    /// timeline, so this is where they come and go; they're styled by clicking one on the canvas.
     @ViewBuilder
     private func footer(_ transcript: TimelineTranscript) -> some View {
         let newVideos = store.transcribing == nil ? store.untranscribedVideos.count : 0
         let removable = transcript.pauseCount + transcript.fillerCount
+        let captions = store.transcribing == nil ? store.project.tracks.first(where: { $0.captions != nil })?.id : nil
         let addsCaptions = store.transcribing == nil && !store.project.hasCaptions && !transcript.isEmpty
-        if store.transcribing != nil || !store.transcriptSelection.isEmpty || removable > 0 || newVideos > 0 || addsCaptions {
+        if store.transcribing != nil || !store.transcriptSelection.isEmpty || removable > 0 || newVideos > 0 || addsCaptions || captions != nil {
             VStack(spacing: 8) {
                 if let transcribing = store.transcribing {
                     TranscribingProgress(seconds: transcribing.seconds, duration: transcribing.duration,
@@ -89,7 +168,13 @@ struct TranscriptPanel: View {
                         store.addCaptions()
                     }
                     .buttonStyle(BoxButtonStyle())
-                    .help("Shows what's said on the canvas, a phrase at a time, following every edit")
+                    .help("Shows what's said on the canvas, a phrase at a time, following every edit. Click a caption there to style them.")
+                } else if let captions {
+                    Button("Remove captions") {
+                        store.removeCaptions(captions)
+                    }
+                    .buttonStyle(BoxButtonStyle())
+                    .help("Takes the captions off the canvas; the transcript stays")
                 }
                 if newVideos > 0 {
                     Button(newVideos == 1 ? "Transcribe 1 new video" : "Transcribe \(newVideos) new videos") {
@@ -108,6 +193,80 @@ struct TranscriptPanel: View {
         let fillerText = fillers == 1 ? "1 filler" : "\(fillers) fillers"
         if pauses > 0, fillers > 0 { return "Remove \(pauseText) and \(fillerText)" }
         return "Remove \(pauses > 0 ? pauseText : fillerText)"
+    }
+}
+
+/// The lines a search matches, each with its time and the match in bold; clicking one goes to it.
+private struct SearchResults: View {
+    let matches: [TranscriptMatch]
+    let current: Int?
+    let select: (Int) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            PanelLabel(matches.isEmpty ? "No matches" : matches.count == 1 ? "1 match" : "\(matches.count) matches")
+                .padding(.horizontal, 14)
+                .padding(.bottom, 6)
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(spacing: 2) {
+                        ForEach(matches.indices, id: \.self) { index in
+                            SearchResultRow(match: matches[index], isCurrent: index == current) { select(index) }
+                                .id(index)
+                        }
+                    }
+                    .padding(.horizontal, 6)
+                    .padding(.bottom, 12)
+                }
+                .onChange(of: current) {
+                    if let current { proxy.scrollTo(current) }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+}
+
+private struct SearchResultRow: View {
+    let match: TranscriptMatch
+    let isCurrent: Bool
+    let action: () -> Void
+    @State private var isHovered = false
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Text(match.time.shortDuration)
+                .font(.system(size: 11))
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+                .frame(width: 30, alignment: .leading)
+            Text(snippet)
+                .font(.system(size: 12.5))
+                .lineLimit(2)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(RoundedRectangle(cornerRadius: 7, style: .continuous)
+            .fill(Color.primary.opacity(isCurrent ? 0.09 : isHovered ? 0.05 : 0)))
+        .contentShape(Rectangle())
+        .onHover { isHovered = $0 }
+        .onTapGesture(perform: action)
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction(.default) { action() }
+    }
+
+    /// The words around the match in gray, the match itself bold and white.
+    private var snippet: AttributedString {
+        var before = AttributedString((match.isCutBefore ? "…" : "") + match.before)
+        before.foregroundColor = Color(white: 0.7)
+        var found = AttributedString(match.match)
+        found.foregroundColor = .white
+        found.inlinePresentationIntent = .stronglyEmphasized
+        var after = AttributedString(match.after + (match.isCutAfter ? "…" : ""))
+        after.foregroundColor = Color(white: 0.7)
+        return before + found + after
     }
 }
 
@@ -154,7 +313,6 @@ extension NSAttributedString.Key {
 private struct TranscriptTextView: NSViewRepresentable {
     let store: ProjectStore
     let transcript: TimelineTranscript
-    let findRequests: Int
 
     func makeCoordinator() -> Coordinator {
         Coordinator(store: store)
@@ -165,7 +323,6 @@ private struct TranscriptTextView: NSViewRepresentable {
         scroll.drawsBackground = false
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
-        scroll.findBarPosition = .aboveContent
 
         let storage = NSTextStorage()
         let layout = NSLayoutManager()
@@ -188,8 +345,6 @@ private struct TranscriptTextView: NSViewRepresentable {
         text.isHorizontallyResizable = false
         text.autoresizingMask = [.width]
         text.textContainerInset = NSSize(width: 14, height: 2)
-        text.usesFindBar = true
-        text.isIncrementalSearchingEnabled = true
         text.selectedTextAttributes = [
             .backgroundColor: NSColor.controlAccentColor.withAlphaComponent(0.45),
             .foregroundColor: NSColor.white,
@@ -205,18 +360,15 @@ private struct TranscriptTextView: NSViewRepresentable {
         coordinator.store = store
         coordinator.show(transcript)
         coordinator.follow(store.playback.currentTime, isPlaying: store.playback.isPlaying)
-        if findRequests != coordinator.findRequests {
-            coordinator.findRequests = findRequests
-            coordinator.showFind()
-        }
     }
 
     @MainActor
     final class Coordinator: NSObject, NSTextViewDelegate, NSTextFieldDelegate {
         var store: ProjectStore
         weak var textView: TranscriptNSTextView?
-        var findRequests = 0
         private var shown: TimelineTranscript?
+        /// Brings the word being heard into view once, when the transcript comes back from a search.
+        private var reveals = true
         /// Where each item sits in the text.
         private var itemRanges: [NSRange] = []
         private var current: Int?
@@ -253,21 +405,15 @@ private struct TranscriptTextView: NSViewRepresentable {
             guard index != current else { return }
             current = index
             textView.currentRange = index.map { itemRanges[$0] }
-            guard isPlaying, let range = textView.currentRange, let rect = textView.rect(for: range),
+            let reveal = reveals && index != nil
+            if index != nil { reveals = false }
+            guard isPlaying || reveal, let range = textView.currentRange, let rect = textView.rect(for: range),
                   let clip = textView.enclosingScrollView?.contentView else { return }
             let visible = clip.documentVisibleRect
             if !visible.insetBy(dx: 0, dy: 8).contains(rect) {
                 clip.scroll(to: NSPoint(x: 0, y: max(0, rect.minY - visible.height / 3)))
                 textView.enclosingScrollView?.reflectScrolledClipView(clip)
             }
-        }
-
-        func showFind() {
-            guard let textView else { return }
-            textView.window?.makeFirstResponder(textView)
-            let item = NSMenuItem()
-            item.tag = NSTextFinder.Action.showFindInterface.rawValue
-            textView.performFindPanelAction(item)
         }
 
         /// The word being fixed, and the field it's retyped in.

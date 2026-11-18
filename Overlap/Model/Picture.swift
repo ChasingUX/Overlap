@@ -293,8 +293,6 @@ struct Title: Hashable, Sendable, Codable {
     var highlightsSpokenWord = false
     /// The word lit in the frame being drawn, set as it's drawn.
     var litWord: Int?
-    /// The clip a caption's words are said in, which it shows above on the timeline.
-    var captionOf: UUID?
 
     /// What's saved; a caption's words and lit word are made again as it plays.
     enum CodingKeys: String, CodingKey {
