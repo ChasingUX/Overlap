@@ -129,12 +129,6 @@ struct BackgroundPicker: View {
                 AddTile(title: "Add wallpapers") { store.presentWallpaperPanel { choose($0) } }
                     .aspectRatio(1, contentMode: .fit)
             }
-            if aerials.count < 5 {
-                Text("Aerials you download in System Settings › Wallpaper show up here.")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.tertiary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
 
             caption("Plain color")
                 .padding(.top, 10)

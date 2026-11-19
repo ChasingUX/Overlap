@@ -821,8 +821,11 @@ struct AnchorView: NSViewRepresentable {
         weak var view: NSView?
     }
 
+    /// Its own kind of view, so debug runs can find it.
+    final class Spot: NSView {}
+
     func makeNSView(context: Context) -> NSView {
-        let view = NSView()
+        let view = Spot()
         anchor.view = view
         return view
     }

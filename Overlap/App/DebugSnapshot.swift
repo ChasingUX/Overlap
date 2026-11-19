@@ -789,6 +789,66 @@ enum DebugSnapshot {
                     NSColorPanel.shared.close()
                 }
             }
+            // OVERLAP_SNAPSHOT_MESHPICK=<hex> chooses the first gradient, clicks its editor's top-left dot, and moves the color
+            // panel toward that color in steps, as a drag through the panel would, capturing before the color settles.
+            var meshPickReport: [String: Any] = [:]
+            if let hex = environment["OVERLAP_SNAPSHOT_MESHPICK"].flatMap({ Int($0, radix: 16) }), let store = document?.store,
+               let window = NSApplication.shared.windows.first(where: \.isVisible), let content = window.contentView {
+                store.select([])
+                store.activeTab = .canvas
+                store.setBackground(BackgroundFill.gradients[0])
+                try? await Task.sleep(for: .milliseconds(500))
+                if let spot = find(AnchorView.Spot.self, in: content) {
+                    NSApplication.shared.activate(ignoringOtherApps: true)
+                    window.makeKeyAndOrderFront(nil)
+                    // The top-left dot sits 14 points in from the editor's corner; the view is flipped or not.
+                    let y = spot.isFlipped ? 14 : spot.bounds.height - 14
+                    let point = spot.convert(CGPoint(x: 14, y: y), to: nil)
+                    for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                        if let event = NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                                          windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1) {
+                            NSApplication.shared.postEvent(event, atStart: false)
+                        }
+                        try? await Task.sleep(for: .milliseconds(80))
+                    }
+                    try? await Task.sleep(for: .milliseconds(400))
+                    meshPickReport["panelVisible"] = NSColorPanel.shared.isVisible
+                    for step in [0.4, 0.7, 1.0] {
+                        NSColorPanel.shared.color = NSColor(srgbRed: CGFloat((hex >> 16) & 0xFF) / 255 * step, green: CGFloat((hex >> 8) & 0xFF) / 255 * step,
+                                                            blue: CGFloat(hex & 0xFF) / 255 * step, alpha: 1)
+                        try? await Task.sleep(for: .milliseconds(100))
+                    }
+                    // Still settling: the project keeps the old color, while the editor and canvas show the new one.
+                    if case let .meshGradient(mesh)? = store.project.background, let first = mesh.points.first {
+                        meshPickReport["projectBeforeSettle"] = [first.color.red, first.color.green, first.color.blue].map { Int(($0 * 255).rounded()) }
+                    }
+                    if let view = window.contentView?.superview, let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+                        view.cacheDisplay(in: view.bounds, to: bitmap)
+                        try? bitmap.representation(using: .png, properties: [:])?.write(to: URL(filePath: "\(prefix)-meshpick.png"))
+                    }
+                    try? await Task.sleep(for: .milliseconds(800))
+                    if case let .meshGradient(mesh)? = store.project.background, let first = mesh.points.first {
+                        meshPickReport["projectAfterSettle"] = [first.color.red, first.color.green, first.color.blue].map { Int(($0 * 255).rounded()) }
+                    }
+                    // Then a second dot, the top-right corner, which should take the selected look from the first.
+                    let corner = spot.convert(CGPoint(x: spot.bounds.width - 14, y: y), to: nil)
+                    for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                        if let event = NSEvent.mouseEvent(with: type, location: corner, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                                          windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1) {
+                            NSApplication.shared.postEvent(event, atStart: false)
+                        }
+                        try? await Task.sleep(for: .milliseconds(80))
+                    }
+                    try? await Task.sleep(for: .milliseconds(400))
+                    if let view = window.contentView?.superview, let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+                        view.cacheDisplay(in: view.bounds, to: bitmap)
+                        try? bitmap.representation(using: .png, properties: [:])?.write(to: URL(filePath: "\(prefix)-meshpick2.png"))
+                    }
+                    NSColorPanel.shared.close()
+                } else {
+                    meshPickReport["editor"] = "not found"
+                }
+            }
             // OVERLAP_SNAPSHOT_TAB=video or audio selects the top track's first clip and opens that tab.
             if let tab = environment["OVERLAP_SNAPSHOT_TAB"].flatMap({ name in PanelTab.allCases.first { $0.title.lowercased() == name } }),
                let store = document?.store, let clip = store.project.tracks.last?.clips.first {
@@ -1406,6 +1466,7 @@ enum DebugSnapshot {
                     "edited": editedSamples,
                     "titleSeek": titleSeekReport,
                     "addColor": addColorReport,
+                    "meshPick": meshPickReport,
                     "windowTitle": store.windowTitle,
                     "titleEdit": titleEdit,
                     "pinch": pinch,

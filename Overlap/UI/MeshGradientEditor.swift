@@ -29,6 +29,10 @@ struct MeshGradientEditor: View {
     /// The dots and lines sit this far in from the rectangle's edges, so a dot on an edge shows whole; the gradient
     /// runs out to the edges behind them.
     private static let inset: CGFloat = 14
+    /// The square around each dot that takes hover and clicks.
+    private static let target: CGFloat = 26
+    /// How far the pointer moves before a click on a dot becomes a drag.
+    private static let slop: CGFloat = 4
 
     private static func area(in size: CGSize) -> CGRect {
         CGRect(x: inset, y: inset, width: max(1, size.width - inset * 2), height: max(1, size.height - inset * 2))
@@ -67,61 +71,72 @@ struct MeshGradientEditor: View {
     /// Opens the color panel for a dot: changes show as they're made, and each settled color is an undo step.
     private func pickColor(_ index: Int) {
         guard let current = latest.mesh, current.points.indices.contains(index) else { return }
-        editing = index
         session.start(color: current.points[index].color, beside: anchor.view,
                       onChange: { color in
-                          if let mesh = latest.mesh { onPreview(recolored(mesh, index, color)) }
+                          guard let mesh = latest.mesh, mesh.points.indices.contains(index) else { return }
+                          // Shown here at once as well as on the canvas, before the color settles into the project.
+                          let next = recolored(mesh, index, color)
+                          latest.mesh = next
+                          draft = next
+                          onPreview(next)
                       },
                       onCommit: { color in
-                          if let mesh = latest.mesh { onCommit(recolored(mesh, index, color), "Change Gradient Color") }
+                          guard let mesh = latest.mesh, mesh.points.indices.contains(index) else { return }
+                          onCommit(recolored(mesh, index, color), "Change Gradient Color")
+                          draft = nil
                       },
                       onEnd: { editing = nil })
+        // After starting: starting ends the last dot's session first, which clears the dot it was picking for.
+        editing = index
     }
 
-    /// A dot over a point, in its own color with a hairline white edge, a little larger while the color panel picks for
-    /// it. Dragging it moves the point; a click without moving opens the color panel for it.
+    /// A dot over a point, in its own color with a hairline white edge. It grows a little under the pointer, and stays
+    /// that size while the color panel picks for it. Dragging it moves the point; a click without moving opens the color
+    /// panel for it.
     private func dot(_ index: Int, in mesh: MeshGradientFill, size: CGSize) -> some View {
         let point = mesh.points[index]
         let isSelected = index == editing
-        let side: CGFloat = isSelected ? 14 : 11
+        let isRaised = isSelected || hovered == index
+        let area = Self.area(in: size)
         return Circle()
             .fill(Color(rgba: point.color))
-            .overlay(Circle().strokeBorder(Color.white.opacity(isSelected ? 0.95 : 0.7), lineWidth: isSelected ? 1.5 : 1))
-            .frame(width: side, height: side)
+            .overlay(Circle().strokeBorder(Color.white.opacity(0.7), lineWidth: 1))
+            .frame(width: 11, height: 11)
             // Just enough to lift a dot off a gradient of its own color.
             .shadow(color: .black.opacity(0.28), radius: 1.5, y: 0.5)
-            .scaleEffect(hovered == index ? 1.3 : 1)
-            .animation(.easeOut(duration: 0.12), value: hovered == index)
-            .frame(width: 26, height: 26)
-        .contentShape(Circle())
-        .position(x: Self.area(in: size).minX + point.x * Self.area(in: size).width,
-                  y: Self.area(in: size).minY + point.y * Self.area(in: size).height)
-        .gesture(
-            DragGesture(minimumDistance: 0, coordinateSpace: .named(Self.space))
-                .onChanged { drag in
-                    guard moved || hypot(drag.translation.width, drag.translation.height) > 2 else { return }
-                    moved = true
-                    let area = Self.area(in: size)
-                    let next = (draft ?? self.mesh).moving(index, to: (drag.location.x - area.minX) / area.width,
-                                                           (drag.location.y - area.minY) / area.height)
-                    draft = next
-                    onPreview(next)
-                }
-                .onEnded { _ in
-                    if moved, let draft {
-                        onCommit(draft, "Move Gradient Color")
-                    } else {
-                        pickColor(index)
+            .scaleEffect(isRaised ? 1.35 : 1)
+            .animation(.easeOut(duration: 0.12), value: isRaised)
+            .frame(width: Self.target, height: Self.target)
+            .contentShape(Circle())
+            // Hover and clicks are taken on the dot's own small square, before it's placed: once placed, a view spans
+            // the whole rectangle, and every dot would answer for all of it.
+            .onHover { inside in
+                if inside { hovered = index } else if hovered == index { hovered = nil }
+            }
+            .gesture(
+                DragGesture(minimumDistance: 0, coordinateSpace: .named(Self.space))
+                    .onChanged { drag in
+                        // A click wobbles a little; only a real move drags the dot.
+                        guard moved || hypot(drag.translation.width, drag.translation.height) > Self.slop else { return }
+                        moved = true
+                        let next = (draft ?? self.mesh).moving(index, to: (drag.location.x - area.minX) / area.width,
+                                                               (drag.location.y - area.minY) / area.height)
+                        draft = next
+                        onPreview(next)
                     }
-                    moved = false
-                    draft = nil
-                }
-        )
-        .onHover { inside in
-            if inside { hovered = index } else if hovered == index { hovered = nil }
-        }
-        .accessibilityLabel("Color \(index + 1)")
-        .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
+                    .onEnded { _ in
+                        if moved, let draft {
+                            onCommit(draft, "Move Gradient Color")
+                            self.draft = nil
+                        } else {
+                            pickColor(index)
+                        }
+                        moved = false
+                    }
+            )
+            .position(x: area.minX + point.x * area.width, y: area.minY + point.y * area.height)
+            .accessibilityLabel("Color \(index + 1)")
+            .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
     }
 
     /// The mesh's lines through its points, along each row and each column, as smooth curves.
